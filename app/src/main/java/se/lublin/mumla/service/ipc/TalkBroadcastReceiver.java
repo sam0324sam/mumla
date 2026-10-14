@@ -49,9 +49,9 @@ public class TalkBroadcastReceiver extends BroadcastReceiver {
         String action = intent.getAction();
         Log.d(TAG, "Received talk action: " + action);
 
-        if (BROADCAST_PTT_DOWN.equals(action)) {
+        if (BROADCAST_PTT_DOWN.equals(action) || "android.intent.action.PTT.down".equals(action)) {
             mService.onTalkKeyDown();
-        } else if (BROADCAST_PTT_UP.equals(action)) {
+        } else if (BROADCAST_PTT_UP.equals(action) || "android.intent.action.PTT.up".equals(action)) {
             mService.onTalkKeyUp();
         } else if (BROADCAST_TALK.equals(action)) {
             String status = intent.getStringExtra(EXTRA_TALK_STATUS);

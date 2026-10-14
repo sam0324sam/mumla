@@ -42,11 +42,23 @@ import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.FileReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collections;
 import java.util.List;
+
+import android.content.Context;
+import android.media.MediaPlayer;
+import android.media.ToneGenerator;
+import android.os.BatteryManager;
+import se.lublin.mumla.app.PocketLockActivity;
 
 import se.lublin.humla.Constants;
 import se.lublin.humla.HumlaService;
@@ -122,11 +134,48 @@ public class MumlaService extends HumlaService implements
         }
     };
 
+    private static volatile MumlaService sInstance;
+    public static MumlaService getInstance() { return sInstance; }
+
     private BroadcastReceiver mTalkReceiver;
     private PttSoundManager mPttSoundManager;
     private Handler mUiHandler;
     private long mLastIncomingVoiceEndTime = 0;
     private long mLastBusyToastTime = 0;
+
+    // Time announcement (WAV synthesis)
+    private volatile long mLastTimeAnnounceTimestamp = 0;
+    private MediaPlayer mTimePlayer;
+
+    // Battery monitoring (Thresholds: 80, 60, 40, 20, 10, 5)
+    private static final int[] BATTERY_THRESHOLDS = { 80, 60, 40, 20, 10, 5 };
+    private BroadcastReceiver mBatteryReceiver;
+    private int mLastAnnouncedBatteryThreshold = -1;
+    private boolean mBatteryMonitorInitialized = false;
+    private int mPendingBatteryResId = 0;
+    private MediaPlayer mBatteryPlayer;
+
+    // Time-Out Timer (TOT 60s)
+    private static final long TOT_TIMEOUT_MS = 60000;
+    private final Handler mTotHandler = new Handler(Looper.getMainLooper());
+    private final Runnable mTotRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (isTalking()) {
+                Log.w(TAG, "TOT Limit (60s) reached! Force talk OFF to free channel");
+                onTalkKeyUp();
+                playTotWarningTone();
+                showFloorBusyToast("發話超時 (60s) 強制切斷");
+            }
+        }
+    };
+
+    // Background Logcat Monitor (G393 WindowManager F4 long press & Vol+ in sleep)
+    private Thread mLogcatThread;
+    private volatile boolean mLogcatRunning = false;
+    private Process mLogcatProcess;
+    private BroadcastReceiver mAuxCommandReceiver;
+    private ToneGenerator mToneGenerator;
 
     private HumlaObserver mObserver = new HumlaObserver() {
         @Override
@@ -355,6 +404,9 @@ public class MumlaService extends HumlaService implements
 
         // Initialize zero-latency PTT sound synthesizer
         mPttSoundManager = new PttSoundManager();
+        try {
+            mToneGenerator = new ToneGenerator(AudioManager.STREAM_SYSTEM, 90);
+        } catch (Exception ignored) {}
 
         // Register PTT broadcast receiver (Anysecu hardware key + Mumla standard IPC)
         mTalkReceiver = new TalkBroadcastReceiver(this);
@@ -362,10 +414,40 @@ public class MumlaService extends HumlaService implements
         pttFilter.addAction(TalkBroadcastReceiver.BROADCAST_TALK);
         pttFilter.addAction(TalkBroadcastReceiver.BROADCAST_PTT_DOWN);
         pttFilter.addAction(TalkBroadcastReceiver.BROADCAST_PTT_UP);
+        pttFilter.addAction("android.intent.action.PTT.down");
+        pttFilter.addAction("android.intent.action.PTT.up");
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             registerReceiver(mTalkReceiver, pttFilter, RECEIVER_EXPORTED);
         } else {
             registerReceiver(mTalkReceiver, pttFilter);
+        }
+
+        sInstance = this;
+        initBatteryMonitoring();
+        startLogcatMonitor();
+
+        // Register auxiliary broadcast commands (ANNOUNCE_TIME, POCKET_LOCK)
+        mAuxCommandReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent == null || intent.getAction() == null) return;
+                String action = intent.getAction();
+                if ("se.lublin.mumla.action.ANNOUNCE_TIME".equals(action) ||
+                    "com.anysecu.pttbridge.action.ANNOUNCE_TIME".equals(action)) {
+                    announceCurrentTime();
+                } else if ("se.lublin.mumla.action.POCKET_LOCK".equals(action)) {
+                    triggerPocketLock();
+                }
+            }
+        };
+        IntentFilter auxFilter = new IntentFilter();
+        auxFilter.addAction("se.lublin.mumla.action.ANNOUNCE_TIME");
+        auxFilter.addAction("com.anysecu.pttbridge.action.ANNOUNCE_TIME");
+        auxFilter.addAction("se.lublin.mumla.action.POCKET_LOCK");
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            registerReceiver(mAuxCommandReceiver, auxFilter, RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(mAuxCommandReceiver, auxFilter);
         }
     }
 
@@ -376,6 +458,31 @@ public class MumlaService extends HumlaService implements
 
     @Override
     public void onDestroy() {
+        stopLogcatMonitor();
+        if (mBatteryReceiver != null) {
+            try { unregisterReceiver(mBatteryReceiver); } catch (Exception ignored) {}
+            mBatteryReceiver = null;
+        }
+        if (mAuxCommandReceiver != null) {
+            try { unregisterReceiver(mAuxCommandReceiver); } catch (Exception ignored) {}
+            mAuxCommandReceiver = null;
+        }
+        if (mTimePlayer != null) {
+            try { mTimePlayer.release(); } catch (Exception ignored) {}
+            mTimePlayer = null;
+        }
+        if (mBatteryPlayer != null) {
+            try { mBatteryPlayer.release(); } catch (Exception ignored) {}
+            mBatteryPlayer = null;
+        }
+        if (mToneGenerator != null) {
+            try { mToneGenerator.release(); } catch (Exception ignored) {}
+            mToneGenerator = null;
+        }
+        if (sInstance == this) {
+            sInstance = null;
+        }
+
         if (mNotification != null) {
             mNotification.hide();
             mNotification = null;
@@ -782,7 +889,9 @@ public class MumlaService extends HumlaService implements
             if (mPttSoundManager != null) {
                 mPttSoundManager.playPermitTone();
             }
-            Log.i(TAG, "PTT granted: Transmitting and played DMR permit tone");
+            mTotHandler.removeCallbacks(mTotRunnable);
+            mTotHandler.postDelayed(mTotRunnable, TOT_TIMEOUT_MS);
+            Log.i(TAG, "PTT granted: Transmitting and played DMR permit tone (TOT 60s started)");
         }
     }
 
@@ -793,12 +902,24 @@ public class MumlaService extends HumlaService implements
     @Override
     public void onTalkKeyUp() {
         Log.d(TAG, "onTalkKeyUp triggered");
+        mTotHandler.removeCallbacks(mTotRunnable);
         if (isTalking()) {
             setTalkingState(false);
             if (mPttSoundManager != null) {
                 mPttSoundManager.playReleaseTone();
             }
             Log.i(TAG, "PTT released: Stopped transmitting and played release tone");
+
+            if (mPendingBatteryResId != 0) {
+                final int resId = mPendingBatteryResId;
+                mPendingBatteryResId = 0;
+                mUiHandler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        playBatteryVoice(resId);
+                    }
+                }, 400);
+            }
         }
     }
 
@@ -856,5 +977,343 @@ public class MumlaService extends HumlaService implements
 
         mMessageLog.add(new IChatMessage.TextMessage(msg));
         return msg;
+    }
+
+    // =========================================================================
+    // Anysecu PTT Hardware Integration & Auxiliary Functions
+    // =========================================================================
+
+    private void playTotWarningTone() {
+        try {
+            if (mToneGenerator != null) {
+                mToneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP2, 100);
+                mUiHandler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            if (mToneGenerator != null) {
+                                mToneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP2, 100);
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                }, 140);
+                mUiHandler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            if (mToneGenerator != null) {
+                                mToneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP2, 120);
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                }, 280);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    public synchronized void triggerPocketLock() {
+        if (PocketLockActivity.isLocked()) {
+            return;
+        }
+        Log.i(TAG, "F4 / Volume-Down Long Press -> Triggering Pocket Lock Mode");
+        try {
+            if (mToneGenerator != null) {
+                mToneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP2, 350);
+            }
+        } catch (Exception ignored) {}
+
+        Intent lockIntent = new Intent(this, PocketLockActivity.class);
+        lockIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        startActivity(lockIntent);
+    }
+
+    private void startLogcatMonitor() {
+        mLogcatRunning = true;
+        mLogcatThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                while (mLogcatRunning) {
+                    try {
+                        mLogcatProcess = Runtime.getRuntime().exec(new String[]{
+                            "logcat", "-b", "system", "-b", "main", "-T", "1", "-v", "brief", "-s", "WindowManager:D"
+                        });
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(mLogcatProcess.getInputStream()));
+                        String line;
+                        while (mLogcatRunning && (line = reader.readLine()) != null) {
+                            if (line.contains("MSG_KEY_F4_LONG_PRESS_TIMEOUT")) {
+                                triggerPocketLock();
+                            } else if (PocketLockActivity.isLocked() && line.contains("keycode=24 ") && line.contains("interactive=false")) {
+                                Log.i(TAG, "Volume+ detected while screen asleep -> Wake and announce time directly");
+                                announceCurrentTime();
+                            }
+                        }
+                    } catch (Exception e) {
+                        try {
+                            Thread.sleep(1000);
+                        } catch (InterruptedException ie) {
+                            break;
+                        }
+                    } finally {
+                        if (mLogcatProcess != null) {
+                            mLogcatProcess.destroy();
+                            mLogcatProcess = null;
+                        }
+                    }
+                }
+            }
+        });
+        mLogcatThread.setPriority(Thread.MAX_PRIORITY);
+        mLogcatThread.start();
+    }
+
+    private void stopLogcatMonitor() {
+        mLogcatRunning = false;
+        if (mLogcatProcess != null) {
+            try {
+                mLogcatProcess.destroy();
+            } catch (Exception ignored) {}
+            mLogcatProcess = null;
+        }
+        if (mLogcatThread != null) {
+            mLogcatThread.interrupt();
+            mLogcatThread = null;
+        }
+    }
+
+    public synchronized void announceCurrentTime() {
+        if (isTalking()) {
+            Log.d(TAG, "Ignore time announcement because PTT is active");
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        if (now - mLastTimeAnnounceTimestamp < 3000) {
+            Log.d(TAG, "Ignore time announcement within debounce window (" + (now - mLastTimeAnnounceTimestamp) + "ms)");
+            return;
+        }
+        mLastTimeAnnounceTimestamp = now;
+
+        try {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                PowerManager.WakeLock wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Mumla:TimeAnnounce");
+                wl.acquire(3500);
+            }
+        } catch (Exception ignored) {}
+
+        try {
+            Calendar cal = Calendar.getInstance();
+            int hour24 = cal.get(Calendar.HOUR_OF_DAY);
+            int minute = cal.get(Calendar.MINUTE);
+
+            int hour12 = hour24 % 12;
+            if (hour12 == 0) {
+                hour12 = 12;
+            }
+
+            int hourResId = getResources().getIdentifier("hour_" + hour12, "raw", getPackageName());
+            int minResId = getResources().getIdentifier("min_" + minute, "raw", getPackageName());
+
+            if (hourResId == 0 || minResId == 0) {
+                Log.e(TAG, "Missing audio res for hour=" + hour12 + " min=" + minute);
+                return;
+            }
+
+            Log.i(TAG, "Announcing concise time: 24h=" + hour24 + " -> " + hour12 + "點 " + minute + "分");
+            playSynthesizedWav(new int[]{ hourResId, minResId });
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to announce time: " + e.getMessage(), e);
+        }
+    }
+
+    private synchronized void playSynthesizedWav(int[] resIds) {
+        try {
+            ByteArrayOutputStream pcmStream = new ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+
+            for (int resId : resIds) {
+                InputStream is = getResources().openRawResource(resId);
+                ByteArrayOutputStream rawStream = new ByteArrayOutputStream();
+                int read;
+                while ((read = is.read(buf)) != -1) {
+                    rawStream.write(buf, 0, read);
+                }
+                is.close();
+
+                byte[] rawBytes = rawStream.toByteArray();
+                appendPcmData(rawBytes, pcmStream);
+            }
+
+            byte[] allPcm = pcmStream.toByteArray();
+            int totalPcm = allPcm.length;
+
+            File cacheFile = new File(getCacheDir(), "current_time.wav");
+            FileOutputStream fos = new FileOutputStream(cacheFile);
+            DataOutputStream dos = new DataOutputStream(fos);
+
+            // WAV Header (44 bytes, 22050Hz, 16bit, Mono)
+            dos.writeBytes("RIFF");
+            dos.writeInt(Integer.reverseBytes(36 + totalPcm));
+            dos.writeBytes("WAVE");
+            dos.writeBytes("fmt ");
+            dos.writeInt(Integer.reverseBytes(16)); // Subchunk1Size
+            dos.writeShort(Short.reverseBytes((short) 1)); // AudioFormat = 1 (PCM)
+            dos.writeShort(Short.reverseBytes((short) 1)); // NumChannels = 1 (Mono)
+            dos.writeInt(Integer.reverseBytes(22050)); // SampleRate
+            dos.writeInt(Integer.reverseBytes(44100)); // ByteRate (22050 * 1 * 2)
+            dos.writeShort(Short.reverseBytes((short) 2)); // BlockAlign
+            dos.writeShort(Short.reverseBytes((short) 16)); // BitsPerSample
+            dos.writeBytes("data");
+            dos.writeInt(Integer.reverseBytes(totalPcm));
+            dos.write(allPcm);
+            dos.flush();
+            dos.close();
+            fos.close();
+
+            if (mTimePlayer != null) {
+                try {
+                    if (mTimePlayer.isPlaying()) {
+                        mTimePlayer.stop();
+                    }
+                    mTimePlayer.release();
+                } catch (Exception ignored) {}
+                mTimePlayer = null;
+            }
+
+            mTimePlayer = new MediaPlayer();
+            mTimePlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+            mTimePlayer.setDataSource(cacheFile.getAbsolutePath());
+            mTimePlayer.prepare();
+            mTimePlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+                @Override
+                public void onCompletion(MediaPlayer mp) {
+                    try { mp.release(); } catch (Exception ignored) {}
+                    if (mTimePlayer == mp) {
+                        mTimePlayer = null;
+                    }
+                }
+            });
+            mTimePlayer.start();
+        } catch (Exception e) {
+            Log.e(TAG, "Error synthesizing or playing time WAV: " + e.getMessage(), e);
+        }
+    }
+
+    private void appendPcmData(byte[] rawWav, ByteArrayOutputStream out) {
+        for (int i = 12; i < rawWav.length - 8; i++) {
+            if (rawWav[i] == 0x64 && rawWav[i + 1] == 0x61 && rawWav[i + 2] == 0x74 && rawWav[i + 3] == 0x61) {
+                int dataSize = (rawWav[i + 4] & 0xFF) |
+                               ((rawWav[i + 5] & 0xFF) << 8) |
+                               ((rawWav[i + 6] & 0xFF) << 16) |
+                               ((rawWav[i + 7] & 0xFF) << 24);
+                int start = i + 8;
+                int len = Math.min(dataSize, rawWav.length - start);
+                if (len > 0) {
+                    out.write(rawWav, start, len);
+                }
+                return;
+            }
+        }
+    }
+
+    private void initBatteryMonitoring() {
+        if (mBatteryReceiver != null) return;
+        mBatteryReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent == null || !Intent.ACTION_BATTERY_CHANGED.equals(intent.getAction())) return;
+
+                int status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+                boolean isCharging = (status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                                      status == BatteryManager.BATTERY_STATUS_FULL);
+
+                int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
+                if (scale <= 0) scale = 100;
+                int percent = (int) ((level / (float) scale) * 100);
+
+                handleBatteryUpdate(percent, isCharging);
+            }
+        };
+        registerReceiver(mBatteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+    }
+
+    private void handleBatteryUpdate(int percent, boolean isCharging) {
+        if (!mBatteryMonitorInitialized) {
+            mBatteryMonitorInitialized = true;
+            for (int t : BATTERY_THRESHOLDS) {
+                if (percent <= t) {
+                    mLastAnnouncedBatteryThreshold = t;
+                }
+            }
+            Log.i(TAG, "Battery monitor initialized: " + percent + "%, charging=" + isCharging + ", baseThreshold=" + mLastAnnouncedBatteryThreshold);
+            return;
+        }
+
+        if (isCharging) {
+            if (mLastAnnouncedBatteryThreshold != -1 && percent > mLastAnnouncedBatteryThreshold + 3) {
+                mLastAnnouncedBatteryThreshold = -1;
+            }
+            mPendingBatteryResId = 0;
+            return;
+        }
+
+        for (int t : BATTERY_THRESHOLDS) {
+            if (percent <= t && (mLastAnnouncedBatteryThreshold == -1 || mLastAnnouncedBatteryThreshold > t)) {
+                mLastAnnouncedBatteryThreshold = t;
+                int resId = getBatteryAudioRes(t);
+                if (isTalking()) {
+                    mPendingBatteryResId = resId;
+                    Log.i(TAG, "Battery threshold " + t + "% hit during PTT, deferred.");
+                } else {
+                    Log.i(TAG, "Battery threshold " + t + "% hit (" + percent + "%), announcing now.");
+                    playBatteryVoice(resId);
+                }
+                break;
+            }
+        }
+    }
+
+    private int getBatteryAudioRes(int threshold) {
+        switch (threshold) {
+            case 80: return R.raw.battery_80;
+            case 60: return R.raw.battery_60;
+            case 40: return R.raw.battery_40;
+            case 20: return R.raw.battery_20;
+            case 10: return R.raw.battery_10;
+            case 5:  return R.raw.battery_5;
+            default: return 0;
+        }
+    }
+
+    private synchronized void playBatteryVoice(int resId) {
+        if (resId == 0) return;
+        try {
+            if (mBatteryPlayer != null) {
+                try {
+                    if (mBatteryPlayer.isPlaying()) {
+                        mBatteryPlayer.stop();
+                    }
+                    mBatteryPlayer.release();
+                } catch (Exception ignored) {}
+                mBatteryPlayer = null;
+            }
+            mBatteryPlayer = MediaPlayer.create(this, resId);
+            if (mBatteryPlayer != null) {
+                mBatteryPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+                mBatteryPlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+                    @Override
+                    public void onCompletion(MediaPlayer mp) {
+                        try { mp.release(); } catch (Exception ignored) {}
+                        if (mBatteryPlayer == mp) {
+                            mBatteryPlayer = null;
+                        }
+                    }
+                });
+                mBatteryPlayer.start();
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to play battery voice: " + e.getMessage());
+        }
     }
 }
