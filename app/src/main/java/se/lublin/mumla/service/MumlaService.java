@@ -38,6 +38,9 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -45,6 +48,7 @@ import java.util.List;
 import se.lublin.humla.Constants;
 import se.lublin.humla.HumlaService;
 import se.lublin.humla.exception.AudioException;
+import se.lublin.humla.model.IChannel;
 import se.lublin.humla.model.IMessage;
 import se.lublin.humla.model.IUser;
 import se.lublin.humla.model.Message;
@@ -55,6 +59,7 @@ import se.lublin.mumla.R;
 import se.lublin.mumla.Settings;
 import se.lublin.mumla.service.ipc.TalkBroadcastReceiver;
 import se.lublin.mumla.util.HtmlUtils;
+import se.lublin.mumla.util.PttSoundManager;
 
 /**
  * An extension of the Humla service with some added Mumla-exclusive non-standard Mumble features.
@@ -115,6 +120,7 @@ public class MumlaService extends HumlaService implements
     };
 
     private BroadcastReceiver mTalkReceiver;
+    private PttSoundManager mPttSoundManager;
 
     private HumlaObserver mObserver = new HumlaObserver() {
         @Override
@@ -182,6 +188,9 @@ public class MumlaService extends HumlaService implements
             }
 
             if (user.getSession() == selfSession) {
+                if (user.getChannel() != null && user.getChannel().getId() > 0) {
+                    saveLastChannel(user.getChannel().getId());
+                }
                 mSettings.setMutedAndDeafened(user.isSelfMuted(), user.isSelfDeafened()); // Update settings mute/deafen state
                 if(mNotification != null) {
                     String contentText;
@@ -315,7 +324,20 @@ public class MumlaService extends HumlaService implements
         if(mSettings.isTextToSpeechEnabled())
             mTTS = new TextToSpeech(this, mTTSInitListener);
 
+        // Initialize zero-latency PTT sound synthesizer
+        mPttSoundManager = new PttSoundManager();
+
+        // Register PTT broadcast receiver (Anysecu hardware key + Mumla standard IPC)
         mTalkReceiver = new TalkBroadcastReceiver(this);
+        IntentFilter pttFilter = new IntentFilter();
+        pttFilter.addAction(TalkBroadcastReceiver.BROADCAST_TALK);
+        pttFilter.addAction(TalkBroadcastReceiver.BROADCAST_PTT_DOWN);
+        pttFilter.addAction(TalkBroadcastReceiver.BROADCAST_PTT_UP);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            registerReceiver(mTalkReceiver, pttFilter, RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(mTalkReceiver, pttFilter);
+        }
     }
 
     @Override
@@ -342,6 +364,11 @@ public class MumlaService extends HumlaService implements
             e.printStackTrace();
         }
 
+        if (mPttSoundManager != null) {
+            mPttSoundManager.release();
+            mPttSoundManager = null;
+        }
+
         unregisterObserver(mObserver);
         if(mTTS != null) mTTS.shutdown();
         mMessageLog = null;
@@ -351,16 +378,6 @@ public class MumlaService extends HumlaService implements
 
     @Override
     public void onConnectionSynchronized() {
-        // TODO? We seem to be getting a RuntimeException here, from the call
-        //  to the superclass function (in HumlaService). In there,
-        //  mConnect.getSession() finds that isSynchronized==false and throws
-        //  NotSynchronizedException (which is re-thrown as the
-        //  RuntimeException). But how can it be !isSynchronized? -- A server
-        //  msg triggers HumlaConnection.messageServerSync(), which sets up
-        //  mSession and mSynchronized==true and then proceeds to call us from
-        //  a Runnable post()ed to a Handler. The reason could only be that
-        //  HumlaConnect.connect() or disconnect() is called again in the
-        //  middle of all this? And it's made possible by the Handler?
         try {
             super.onConnectionSynchronized();
         } catch (RuntimeException e) {
@@ -371,12 +388,6 @@ public class MumlaService extends HumlaService implements
         // Restore mute/deafen state
         if(mSettings.isMuted() || mSettings.isDeafened()) {
             setSelfMuteDeafState(mSettings.isMuted(), mSettings.isDeafened());
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            registerReceiver(mTalkReceiver, new IntentFilter(TalkBroadcastReceiver.BROADCAST_TALK), RECEIVER_EXPORTED);
-        } else {
-            registerReceiver(mTalkReceiver, new IntentFilter(TalkBroadcastReceiver.BROADCAST_TALK));
         }
 
         if (mSettings.isHotCornerEnabled()) {
@@ -391,10 +402,6 @@ public class MumlaService extends HumlaService implements
     @Override
     public void onConnectionDisconnected(HumlaException e) {
         super.onConnectionDisconnected(e);
-        try {
-            unregisterReceiver(mTalkReceiver);
-        } catch (IllegalArgumentException iae) {
-        }
 
         // Remove overlay if present.
         mChannelOverlay.hide();
@@ -604,32 +611,118 @@ public class MumlaService extends HumlaService implements
     }
 
     /**
-     * Called when a user presses a talk key down (i.e. when they want to talk).
-     * Accounts for talk logic if toggle PTT is on.
+     * Checks if ALSA sound hardware is actively playing audio (busy receiving voice).
+     */
+    public boolean isAlsaBusy() {
+        File asoundDir = new File("/proc/asound");
+        if (!asoundDir.exists() || !asoundDir.isDirectory()) {
+            return false;
+        }
+        try {
+            File[] cards = asoundDir.listFiles();
+            if (cards == null) return false;
+            for (File card : cards) {
+                if (card.isDirectory() && card.getName().startsWith("card")) {
+                    File[] pcms = card.listFiles();
+                    if (pcms == null) continue;
+                    for (File pcm : pcms) {
+                        if (pcm.isDirectory() && pcm.getName().contains("p")) { // Playback
+                            File[] subs = pcm.listFiles();
+                            if (subs == null) continue;
+                            for (File sub : subs) {
+                                File status = new File(sub, "status");
+                                if (status.exists() && status.canRead()) {
+                                    BufferedReader reader = new BufferedReader(new FileReader(status));
+                                    String line = reader.readLine();
+                                    reader.close();
+                                    if (line != null && line.contains("RUNNING")) {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Error checking ALSA busy state", e);
+        }
+        return false;
+    }
+
+    /**
+     * Checks if any other user in the current channel is actively talking.
+     */
+    public boolean isChannelBusy() {
+        try {
+            if (!isSynchronized()) return false;
+            IChannel channel = getSessionChannel();
+            if (channel == null) return false;
+            int selfSession = getSessionId();
+            for (IUser user : channel.getUsers()) {
+                if (user.getSession() != selfSession && user.getTalkState() == TalkState.TALKING) {
+                    return true;
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Error checking channel talk state", e);
+        }
+        return false;
+    }
+
+    public boolean isChannelOrAlsaBusy() {
+        return isChannelBusy() || isAlsaBusy();
+    }
+
+    /**
+     * Called when a user presses a talk key down (Anysecu PTT hardware key or screen widget).
+     * Enforces Busy Channel Lockout (BCLO) and plays Talk Permit Tone when granted.
      */
     @Override
     public void onTalkKeyDown() {
-        if(isConnectionEstablished()
-                && Settings.ARRAY_INPUT_METHOD_PTT.equals(mSettings.getInputMethod())) {
-            if (!mSettings.isPushToTalkToggle() && !isTalking()) {
-                setTalkingState(true); // Start talking
+        Log.d(TAG, "onTalkKeyDown triggered");
+
+        // 1. Connection check: if not established or synchronized, reject with busy/reject tone
+        if (!isConnectionEstablished() || !isSynchronized()) {
+            Log.w(TAG, "PTT rejected: Client not connected or not synchronized yet");
+            if (mPttSoundManager != null) {
+                mPttSoundManager.playBusyTone();
             }
+            return;
+        }
+
+        // 2. Anti-collision check (BCLO): prevent interrupting active incoming voice
+        if (isChannelOrAlsaBusy()) {
+            Log.w(TAG, "PTT rejected: Channel or ALSA is busy with incoming voice");
+            if (mPttSoundManager != null) {
+                mPttSoundManager.playBusyTone();
+            }
+            return;
+        }
+
+        // 3. Grant talk permit
+        if (!isTalking()) {
+            setTalkingState(true);
+            if (mPttSoundManager != null) {
+                mPttSoundManager.playPermitTone();
+            }
+            Log.i(TAG, "PTT granted: Transmitting and played DMR permit tone");
         }
     }
 
     /**
-     * Called when a user releases a talk key (i.e. when they do not want to talk).
-     * Accounts for talk logic if toggle PTT is on.
+     * Called when a user releases a talk key.
+     * Stops transmission and plays DMR release roger tone.
      */
     @Override
     public void onTalkKeyUp() {
-        if(isConnectionEstablished()
-                && Settings.ARRAY_INPUT_METHOD_PTT.equals(mSettings.getInputMethod())) {
-            if (mSettings.isPushToTalkToggle()) {
-                setTalkingState(!isTalking()); // Toggle talk state
-            } else if (isTalking()) {
-                setTalkingState(false); // Stop talking
+        Log.d(TAG, "onTalkKeyUp triggered");
+        if (isTalking()) {
+            setTalkingState(false);
+            if (mPttSoundManager != null) {
+                mPttSoundManager.playReleaseTone();
             }
+            Log.i(TAG, "PTT released: Stopped transmitting and played release tone");
         }
     }
 
