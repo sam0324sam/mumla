@@ -26,8 +26,11 @@ import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.speech.tts.TextToSpeech;
 import android.util.Log;
 import android.widget.Toast;
@@ -121,6 +124,9 @@ public class MumlaService extends HumlaService implements
 
     private BroadcastReceiver mTalkReceiver;
     private PttSoundManager mPttSoundManager;
+    private Handler mUiHandler;
+    private long mLastIncomingVoiceEndTime = 0;
+    private long mLastBusyToastTime = 0;
 
     private HumlaObserver mObserver = new HumlaObserver() {
         @Override
@@ -286,13 +292,35 @@ public class MumlaService extends HumlaService implements
                 Log.d(TAG, "exception in onUserTalkStateUpdated: " + e);
             }
 
-            if (isConnectionEstablished() &&
-                    user.getSession() == selfSession &&
-                    getTransmitMode() == Constants.TRANSMIT_PUSH_TO_TALK &&
-                    user.getTalkState() == TalkState.TALKING &&
-                    mPTTSoundEnabled) {
-                AudioManager audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
-                audioManager.playSoundEffect(AudioManager.FX_KEYPRESS_STANDARD, -1);
+            if (user.getSession() == selfSession) {
+                if (isConnectionEstablished() &&
+                        getTransmitMode() == Constants.TRANSMIT_PUSH_TO_TALK &&
+                        user.getTalkState() == TalkState.TALKING &&
+                        mPTTSoundEnabled) {
+                    AudioManager audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+                    audioManager.playSoundEffect(AudioManager.FX_KEYPRESS_STANDARD, -1);
+                }
+            } else {
+                // Incoming voice from another user in current channel
+                IChannel currentChannel = getSessionChannel();
+                if (currentChannel != null && user.getChannel() != null &&
+                        user.getChannel().getId() == currentChannel.getId()) {
+                    if (user.getTalkState() != TalkState.PASSIVE) {
+                        // Someone else is speaking in our channel!
+                        // If we are currently transmitting, arbitrate collision: yield floor immediately!
+                        if (isTalking()) {
+                            Log.w(TAG, "Floor conflict detected! Yielding floor to remote user: " + user.getName());
+                            setTalkingState(false);
+                            if (mPttSoundManager != null) {
+                                mPttSoundManager.playBusyTone();
+                            }
+                            showFloorBusyToast("搶MIC失敗，頻道已被佔用");
+                        }
+                    } else {
+                        // Remote speaker stopped speaking -> record floor release cooldown time
+                        mLastIncomingVoiceEndTime = SystemClock.elapsedRealtime();
+                    }
+                }
             }
         }
     };
@@ -300,6 +328,7 @@ public class MumlaService extends HumlaService implements
     @Override
     public void onCreate() {
         super.onCreate();
+        mUiHandler = new Handler(Looper.getMainLooper());
         registerObserver(mObserver);
 
         // Register for preference changes
@@ -610,6 +639,19 @@ public class MumlaService extends HumlaService implements
         return mErrorShown;
     }
 
+    private void showFloorBusyToast(final String message) {
+        long now = SystemClock.elapsedRealtime();
+        if (now - mLastBusyToastTime > 1500) {
+            mLastBusyToastTime = now;
+            mUiHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    Toast.makeText(getApplicationContext(), message, Toast.LENGTH_SHORT).show();
+                }
+            });
+        }
+    }
+
     /**
      * Checks if ALSA sound hardware is actively playing audio (busy receiving voice).
      */
@@ -651,7 +693,7 @@ public class MumlaService extends HumlaService implements
     }
 
     /**
-     * Checks if any other user in the current channel is actively talking.
+     * Checks if any other user in the current channel is actively talking (not PASSIVE).
      */
     public boolean isChannelBusy() {
         try {
@@ -660,7 +702,7 @@ public class MumlaService extends HumlaService implements
             if (channel == null) return false;
             int selfSession = getSessionId();
             for (IUser user : channel.getUsers()) {
-                if (user.getSession() != selfSession && user.getTalkState() == TalkState.TALKING) {
+                if (user.getSession() != selfSession && user.getTalkState() != TalkState.PASSIVE) {
                     return true;
                 }
             }
@@ -670,13 +712,45 @@ public class MumlaService extends HumlaService implements
         return false;
     }
 
+    /**
+     * Comprehensive 4-tier check to determine if the channel floor is busy:
+     * 1. Channel state: Any remote user in the current channel is speaking (TALKING/SHOUTING/WHISPERING).
+     * 2. AudioOutput state: Actively decoding or playing voice stream packets within last 400ms.
+     * 3. Hardware ALSA state: Linux sound card playback is in RUNNING state.
+     * 4. Floor Hang Time: Guard interval (300ms) after the last speaker stopped to avoid clipping tail.
+     */
+    public boolean isFloorBusy() {
+        // 1. Channel users check
+        if (isChannelBusy()) {
+            return true;
+        }
+
+        // 2. AudioOutput active speech check
+        if (isAudioOutputActive()) {
+            return true;
+        }
+
+        // 3. Hardware ALSA playback check
+        if (isAlsaBusy()) {
+            return true;
+        }
+
+        // 4. Floor Hang Time (300ms cooldown after remote speech ends)
+        long now = SystemClock.elapsedRealtime();
+        if (now - mLastIncomingVoiceEndTime < 300) {
+            return true;
+        }
+
+        return false;
+    }
+
     public boolean isChannelOrAlsaBusy() {
-        return isChannelBusy() || isAlsaBusy();
+        return isFloorBusy();
     }
 
     /**
      * Called when a user presses a talk key down (Anysecu PTT hardware key or screen widget).
-     * Enforces Busy Channel Lockout (BCLO) and plays Talk Permit Tone when granted.
+     * Enforces Strict Exclusive Floor Control (搶MIC機制) and plays Talk Permit Tone when granted.
      */
     @Override
     public void onTalkKeyDown() {
@@ -688,15 +762,17 @@ public class MumlaService extends HumlaService implements
             if (mPttSoundManager != null) {
                 mPttSoundManager.playBusyTone();
             }
+            showFloorBusyToast("未連線至對講伺服器");
             return;
         }
 
-        // 2. Anti-collision check (BCLO): prevent interrupting active incoming voice
-        if (isChannelOrAlsaBusy()) {
-            Log.w(TAG, "PTT rejected: Channel or ALSA is busy with incoming voice");
+        // 2. Strict Exclusive Floor Control (搶MIC機制): prevent interrupting active incoming voice
+        if (isFloorBusy()) {
+            Log.w(TAG, "PTT rejected: Channel is busy with active speaker");
             if (mPttSoundManager != null) {
                 mPttSoundManager.playBusyTone();
             }
+            showFloorBusyToast("頻道佔線中");
             return;
         }
 

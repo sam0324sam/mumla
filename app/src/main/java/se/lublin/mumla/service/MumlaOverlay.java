@@ -171,10 +171,10 @@ public class MumlaOverlay {
             @Override
             public boolean onTouch(View v, MotionEvent event) {
                 if(MotionEvent.ACTION_DOWN == event.getAction()) {
-                    mService.setTalkingState(true);
+                    mService.onTalkKeyDown();
                     return true;
                 } else if(MotionEvent.ACTION_UP == event.getAction()) {
-                    mService.setTalkingState(false);
+                    mService.onTalkKeyUp();
                     return true;
                 }
                 return false;

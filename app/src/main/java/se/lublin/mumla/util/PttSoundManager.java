@@ -29,8 +29,8 @@ public class PttSoundManager {
             short[] permitSamples = generateDualTone(900, 50, 1200, 50);
             mPermitTrack = createTrack(permitSamples);
 
-            // 2. Busy Tone (Alert reject: 420Hz 80ms + 40ms silence + 420Hz 80ms)
-            short[] busySamples = generateChirp(420, 80, 40, 420, 80);
+            // 2. Busy Tone (Commercial LMR/DMR reject bonk: 320Hz 90ms + 30ms silence + 260Hz 120ms)
+            short[] busySamples = generateChirp(320, 90, 30, 260, 120);
             mBusyTrack = createTrack(busySamples);
 
             // 3. Release Tone (PTT release roger: 650Hz 40ms)
