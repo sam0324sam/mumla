@@ -23,10 +23,15 @@ public class PttSoundManager {
         initTracks();
     }
 
+    // Amplitude constants for synthesized tones
+    private static final int PERMIT_TONE_AMPLITUDE = 8000; // 1/3 of original 24000 for comfortable volume
+    private static final int BUSY_TONE_AMPLITUDE = 26000;
+    private static final int RELEASE_TONE_AMPLITUDE = 20000;
+
     private void initTracks() {
         try {
-            // 1. Permit Tone (Motorola / DMR style: 900Hz 50ms + 1200Hz 50ms)
-            short[] permitSamples = generateDualTone(900, 50, 1200, 50);
+            // 1. Permit Tone (Motorola / DMR style: 900Hz 50ms + 1200Hz 50ms, volume reduced to 1/3)
+            short[] permitSamples = generateDualTone(900, 50, 1200, 50, PERMIT_TONE_AMPLITUDE);
             mPermitTrack = createTrack(permitSamples);
 
             // 2. Busy Tone (Commercial LMR/DMR reject bonk: 320Hz 90ms + 30ms silence + 260Hz 120ms)
@@ -73,17 +78,17 @@ public class PttSoundManager {
         return track;
     }
 
-    private short[] generateDualTone(int freq1, int ms1, int freq2, int ms2) {
+    private short[] generateDualTone(int freq1, int ms1, int freq2, int ms2, int amplitude) {
         int count1 = (SAMPLE_RATE * ms1) / 1000;
         int count2 = (SAMPLE_RATE * ms2) / 1000;
         short[] buffer = new short[count1 + count2];
         for (int i = 0; i < count1; i++) {
             double angle = 2.0 * Math.PI * i / (SAMPLE_RATE / (double) freq1);
-            buffer[i] = (short) (Math.sin(angle) * 24000);
+            buffer[i] = (short) (Math.sin(angle) * amplitude);
         }
         for (int i = 0; i < count2; i++) {
             double angle = 2.0 * Math.PI * i / (SAMPLE_RATE / (double) freq2);
-            buffer[count1 + i] = (short) (Math.sin(angle) * 24000);
+            buffer[count1 + i] = (short) (Math.sin(angle) * amplitude);
         }
         return buffer;
     }
