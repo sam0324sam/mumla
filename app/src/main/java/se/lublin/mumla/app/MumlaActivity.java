@@ -79,6 +79,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import info.guardianproject.netcipher.proxy.OrbotHelper;
+import se.lublin.humla.HumlaService;
 import se.lublin.humla.IHumlaService;
 import se.lublin.humla.IHumlaSession;
 import se.lublin.humla.model.Server;
@@ -119,6 +120,7 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
      * If specified, the provided integer drawer fragment ID is shown when the activity is created.
      */
     public static final String EXTRA_DRAWER_FRAGMENT = "drawer_fragment";
+    public static final String EXTRA_AUTO_CONNECT = "se.lublin.mumla.AUTO_CONNECT";
 
     private IMumlaService mService;
     private MumlaDatabase mDatabase;
@@ -132,6 +134,9 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
     private static final int PERMISSIONS_REQUEST_POST_NOTIFICATIONS = 2;
     private Server mServerPendingPerm = null;
     private boolean mPermPostNotificationsAsked = false;
+
+    private boolean mAutoConnectAttempted = false;
+    private boolean mUserManuallyDisconnected = false;
 
     private AlertDialog mConnectingDialog;
     private AlertDialog mErrorDialog;
@@ -159,6 +164,8 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
                 loadDrawerFragment(DrawerAdapter.ITEM_FAVOURITES);
             }
             updateConnectionState(getService());
+
+            checkAndAttemptAutoConnect();
         }
 
         @Override
@@ -166,6 +173,43 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
             mService = null;
         }
     };
+
+    private void checkAndAttemptAutoConnect() {
+        if (mAutoConnectAttempted || mUserManuallyDisconnected) {
+            return;
+        }
+        if (!mSettings.isAutoConnectOnStartEnabled()) {
+            return;
+        }
+        if (mService != null && mService.getConnectionState() != HumlaService.ConnectionState.DISCONNECTED) {
+            return;
+        }
+        mAutoConnectAttempted = true;
+        attemptAutoConnect();
+    }
+
+    private void attemptAutoConnect() {
+        try {
+            if (mDatabase == null) return;
+            List<Server> servers = mDatabase.getServers();
+            if (servers != null && !servers.isEmpty()) {
+                Server target = servers.get(0);
+                long lastId = mSettings.getLastServer();
+                if (lastId != -1) {
+                    for (Server s : servers) {
+                        if (s.getId() == lastId) {
+                            target = s;
+                            break;
+                        }
+                    }
+                }
+                Log.i(TAG, "Turnkey Auto-Connect: connecting to " + target.getName() + " (" + target.getHost() + ")");
+                connectToServer(target);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Error in attemptAutoConnect", e);
+        }
+    }
 
     private final HumlaObserver mObserver = new HumlaObserver() {
         @Override
@@ -277,6 +321,7 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
                     new MaterialAlertDialogBuilder(MumlaActivity.this)
                             .setMessage(getString(R.string.disconnectSure, mService.getTargetServer().getName()))
                             .setPositiveButton(R.string.confirm, (dialog, which) -> {
+                                mUserManuallyDisconnected = true;
                                 mService.disconnect();
                                 loadDrawerFragment(DrawerAdapter.ITEM_FAVOURITES);
                             })
@@ -387,6 +432,14 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
                 new StartupAction().execute(this);
             }
         }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true);
+            setTurnScreenOn(true);
+        } else {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                    | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+        }
     }
 
     @Override
@@ -399,7 +452,9 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
     protected void onResume() {
         super.onResume();
         Intent connectIntent = new Intent(this, MumlaService.class);
-        bindService(connectIntent, mConnection, 0);
+        bindService(connectIntent, mConnection, BIND_AUTO_CREATE);
+
+        checkAndAttemptAutoConnect();
     }
 
     @Override
@@ -448,6 +503,7 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
         if (mDrawerToggle.onOptionsItemSelected(item))
             return true;
         if (item.getItemId() == R.id.action_disconnect) {
+            mUserManuallyDisconnected = true;
             getService().disconnect();
             return true;
         }
@@ -626,6 +682,11 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
                     return;
                 }
             }
+        }
+
+        mUserManuallyDisconnected = false;
+        if (server != null && server.isSaved()) {
+            mSettings.setLastServer(server.getId());
         }
 
         ServerConnectTask connectTask = new ServerConnectTask(this, mDatabase);

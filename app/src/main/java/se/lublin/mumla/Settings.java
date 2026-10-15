@@ -156,6 +156,10 @@ public class Settings {
     public static final String PREF_START_UP_IN_PINNED_MODE = "startUpInPinnedMode";
     public static final boolean DEFAULT_START_UP_IN_PINNED_MODE = false;
 
+    public static final String PREF_LAST_SERVER = "lastServerId";
+    public static final String PREF_AUTO_CONNECT_ON_START = "autoConnectOnStart";
+    public static final boolean DEFAULT_AUTO_CONNECT_ON_START = true;
+
     public static final String PREF_NEWS_SHOWN_VERSIONS = "newsShownVersions";
 
     static {
@@ -413,6 +417,22 @@ public class Settings {
 
     public void resetNewsShownVersion() {
         preferences.edit().putStringSet(PREF_NEWS_SHOWN_VERSIONS, new HashSet<>()).apply();
+    }
+
+    public long getLastServer() {
+        return preferences.getLong(PREF_LAST_SERVER, -1);
+    }
+
+    public void setLastServer(long serverId) {
+        preferences.edit().putLong(PREF_LAST_SERVER, serverId).apply();
+    }
+
+    public boolean isAutoConnectOnStartEnabled() {
+        return preferences.getBoolean(PREF_AUTO_CONNECT_ON_START, DEFAULT_AUTO_CONNECT_ON_START);
+    }
+
+    public void setAutoConnectOnStartEnabled(boolean enabled) {
+        preferences.edit().putBoolean(PREF_AUTO_CONNECT_ON_START, enabled).apply();
     }
 
 }
