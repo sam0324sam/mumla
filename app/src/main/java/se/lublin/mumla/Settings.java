@@ -176,10 +176,10 @@ public class Settings {
     }
 
     public String getInputMethod() {
-        String method = preferences.getString(PREF_INPUT_METHOD, ARRAY_INPUT_METHOD_VOICE);
+        String method = preferences.getString(PREF_INPUT_METHOD, ARRAY_INPUT_METHOD_PTT);
         if(!ARRAY_INPUT_METHODS.contains(method)) {
-            // Set default method for users who used to use handset mode before removal.
-            method = ARRAY_INPUT_METHOD_VOICE;
+            // Default to PTT for dedicated walkie-talkie devices
+            method = ARRAY_INPUT_METHOD_PTT;
         }
         return method;
     }

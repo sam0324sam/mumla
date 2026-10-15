@@ -20,7 +20,7 @@
 <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <ListPreference
-        android:defaultValue="voiceActivity"
+        android:defaultValue="ptt"
         android:entries="@array/audioInputNames"
         android:entryValues="@array/audioInputValues"
         android:key="audioInputMethod"

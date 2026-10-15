@@ -142,6 +142,11 @@ public class MumlaService extends HumlaService implements
     private Handler mUiHandler;
     private long mLastIncomingVoiceEndTime = 0;
     private long mLastBusyToastTime = 0;
+    private volatile long mLastLocalSoundEndTime = 0;
+
+    public void markLocalSoundPlaying(long durationMs) {
+        mLastLocalSoundEndTime = SystemClock.elapsedRealtime() + durationMs;
+    }
 
     // Time announcement (WAV synthesis)
     private volatile long mLastTimeAnnounceTimestamp = 0;
@@ -763,6 +768,10 @@ public class MumlaService extends HumlaService implements
      * Checks if ALSA sound hardware is actively playing audio (busy receiving voice).
      */
     public boolean isAlsaBusy() {
+        if (SystemClock.elapsedRealtime() < mLastLocalSoundEndTime) {
+            return false;
+        }
+
         File asoundDir = new File("/proc/asound");
         if (!asoundDir.exists() || !asoundDir.isDirectory()) {
             return false;
@@ -775,7 +784,9 @@ public class MumlaService extends HumlaService implements
                     File[] pcms = card.listFiles();
                     if (pcms == null) continue;
                     for (File pcm : pcms) {
-                        if (pcm.isDirectory() && pcm.getName().contains("p")) { // Playback
+                        // CRITICAL FIX: Must be endsWith("p"), NOT contains("p")!
+                        // Previously used pcm.getName().contains("p"), which matched "pcm0c" (mic capture) because of "pcm"!
+                        if (pcm.isDirectory() && pcm.getName().endsWith("p")) { // Playback only
                             File[] subs = pcm.listFiles();
                             if (subs == null) continue;
                             for (File sub : subs) {
@@ -829,22 +840,26 @@ public class MumlaService extends HumlaService implements
     public boolean isFloorBusy() {
         // 1. Channel users check
         if (isChannelBusy()) {
+            Log.w(TAG, "Floor busy: Channel has active remote speaker");
             return true;
         }
 
         // 2. AudioOutput active speech check
         if (isAudioOutputActive()) {
+            Log.w(TAG, "Floor busy: AudioOutput is receiving/playing remote voice");
             return true;
         }
 
         // 3. Hardware ALSA playback check
         if (isAlsaBusy()) {
+            Log.w(TAG, "Floor busy: Hardware ALSA playback is RUNNING");
             return true;
         }
 
         // 4. Floor Hang Time (300ms cooldown after remote speech ends)
         long now = SystemClock.elapsedRealtime();
         if (now - mLastIncomingVoiceEndTime < 300) {
+            Log.w(TAG, "Floor busy: Floor Hang Time cooldown (300ms)");
             return true;
         }
 
@@ -863,9 +878,23 @@ public class MumlaService extends HumlaService implements
     public void onTalkKeyDown() {
         Log.d(TAG, "onTalkKeyDown triggered");
 
+        // 0. Auto-switch to PTT mode defensively if not already in PTT
+        if (getTransmitMode() != Constants.TRANSMIT_PUSH_TO_TALK) {
+            Log.i(TAG, "onTalkKeyDown: Auto-correcting transmit mode to PUSH_TO_TALK");
+            try {
+                mSettings.setInputMethod(Settings.ARRAY_INPUT_METHOD_PTT);
+                Bundle extras = new Bundle();
+                extras.putInt(EXTRAS_TRANSMIT_MODE, Constants.TRANSMIT_PUSH_TO_TALK);
+                configureExtras(extras);
+            } catch (Exception e) {
+                Log.w(TAG, "Error switching to PTT mode", e);
+            }
+        }
+
         // 1. Connection check: if not established or synchronized, reject with busy/reject tone
         if (!isConnectionEstablished() || !isSynchronized()) {
             Log.w(TAG, "PTT rejected: Client not connected or not synchronized yet");
+            markLocalSoundPlaying(250);
             if (mPttSoundManager != null) {
                 mPttSoundManager.playBusyTone();
             }
@@ -876,6 +905,7 @@ public class MumlaService extends HumlaService implements
         // 2. Strict Exclusive Floor Control (搶MIC機制): prevent interrupting active incoming voice
         if (isFloorBusy()) {
             Log.w(TAG, "PTT rejected: Channel is busy with active speaker");
+            markLocalSoundPlaying(250);
             if (mPttSoundManager != null) {
                 mPttSoundManager.playBusyTone();
             }
@@ -886,6 +916,7 @@ public class MumlaService extends HumlaService implements
         // 3. Grant talk permit
         if (!isTalking()) {
             setTalkingState(true);
+            markLocalSoundPlaying(180);
             if (mPttSoundManager != null) {
                 mPttSoundManager.playPermitTone();
             }
@@ -905,6 +936,7 @@ public class MumlaService extends HumlaService implements
         mTotHandler.removeCallbacks(mTotRunnable);
         if (isTalking()) {
             setTalkingState(false);
+            markLocalSoundPlaying(100);
             if (mPttSoundManager != null) {
                 mPttSoundManager.playReleaseTone();
             }
@@ -984,6 +1016,7 @@ public class MumlaService extends HumlaService implements
     // =========================================================================
 
     private void playTotWarningTone() {
+        markLocalSoundPlaying(500);
         try {
             if (mToneGenerator != null) {
                 mToneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP2, 100);
@@ -1040,11 +1073,35 @@ public class MumlaService extends HumlaService implements
                         BufferedReader reader = new BufferedReader(new InputStreamReader(mLogcatProcess.getInputStream()));
                         String line;
                         while (mLogcatRunning && (line = reader.readLine()) != null) {
-                            if (line.contains("MSG_KEY_F4_LONG_PRESS_TIMEOUT")) {
-                                triggerPocketLock();
+                            if (line.contains("unipro.hotkey.ptt.down")) {
+                                mUiHandler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        onTalkKeyDown();
+                                    }
+                                });
+                            } else if (line.contains("unipro.hotkey.ptt.up")) {
+                                mUiHandler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        onTalkKeyUp();
+                                    }
+                                });
+                            } else if (line.contains("MSG_KEY_F4_LONG_PRESS_TIMEOUT")) {
+                                mUiHandler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        triggerPocketLock();
+                                    }
+                                });
                             } else if (PocketLockActivity.isLocked() && line.contains("keycode=24 ") && line.contains("interactive=false")) {
                                 Log.i(TAG, "Volume+ detected while screen asleep -> Wake and announce time directly");
-                                announceCurrentTime();
+                                mUiHandler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        announceCurrentTime();
+                                    }
+                                });
                             }
                         }
                     } catch (Exception e) {
@@ -1127,6 +1184,7 @@ public class MumlaService extends HumlaService implements
     }
 
     private synchronized void playSynthesizedWav(int[] resIds) {
+        markLocalSoundPlaying(3500);
         try {
             ByteArrayOutputStream pcmStream = new ByteArrayOutputStream();
             byte[] buf = new byte[4096];
@@ -1288,6 +1346,7 @@ public class MumlaService extends HumlaService implements
 
     private synchronized void playBatteryVoice(int resId) {
         if (resId == 0) return;
+        markLocalSoundPlaying(3000);
         try {
             if (mBatteryPlayer != null) {
                 try {
