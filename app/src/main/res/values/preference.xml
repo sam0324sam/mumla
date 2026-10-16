@@ -125,4 +125,9 @@
     <string name="pref_show_user_count_summary">Shows the number of users in channel subtrees.</string>
     <string name="pref_start_up_in_pinned_mode">Pinned channels mode</string>
     <string name="pref_start_upIn_pinned_mode_sum">Enables \"Pinned channels\" mode after connecting (hides channels that are not pinned).</string>
+    <string name="pref_timezone_guardian_title">Timezone Guardian</string>
+    <string name="pref_auto_timezone">Auto-detect timezone by IP</string>
+    <string name="pref_auto_timezone_sum">Automatically sync device timezone based on network IP on startup and every hour.</string>
+    <string name="pref_manual_timezone">Forced / Fallback timezone</string>
+    <string name="pref_manual_timezone_sum">Timezone to enforce every hour when auto-detect is disabled or network is unavailable.</string>
 </resources>

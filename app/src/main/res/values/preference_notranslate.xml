@@ -97,6 +97,66 @@
         <item>system</item>
     </string-array>
 
+    <string-array name="timezoneNames">
+        <item>GMT-10:00 (夏威夷 / 檀香山 / Honolulu)</item>
+        <item>GMT-09:00 (阿拉斯加 / 安克拉治 / Anchorage)</item>
+        <item>GMT-08:00 (美西 / 洛杉磯 / 舊金山 / 溫哥華)</item>
+        <item>GMT-07:00 (山區 / 丹佛 / 鳳凰城 / Denver)</item>
+        <item>GMT-06:00 (美中 / 芝加哥 / 墨西哥城 / Chicago)</item>
+        <item>GMT-05:00 (美東 / 紐約 / 華盛頓 / 多倫多)</item>
+        <item>GMT-04:00 (大西洋 / 聖地牙哥 / Santiago)</item>
+        <item>GMT-03:00 (巴西利亞 / 布宜諾斯艾利斯 / Sao Paulo)</item>
+        <item>GMT+00:00 (格林威治 / 倫敦 / 都柏林 / 里斯本)</item>
+        <item>GMT+01:00 (中歐 / 巴黎 / 柏林 / 羅馬 / 馬德里)</item>
+        <item>GMT+02:00 (東歐 / 雅典 / 開羅 / 赫爾辛基 / 耶路撒冷)</item>
+        <item>GMT+03:00 (莫斯科 / 伊斯坦堡 / 利雅德 / 卡達)</item>
+        <item>GMT+03:30 (伊朗 / 德黑蘭 / Tehran)</item>
+        <item>GMT+04:00 (阿聯酋 / 杜拜 / 阿布達比 / Dubai)</item>
+        <item>GMT+04:30 (阿富汗 / 喀布爾 / Kabul)</item>
+        <item>GMT+05:00 (巴基斯坦 / 喀拉蚩 / 塔什干 / Karachi)</item>
+        <item>GMT+05:30 (印度 / 新德里 / 孟買 / 斯里蘭卡)</item>
+        <item>GMT+05:45 (尼泊爾 / 加德滿都 / Kathmandu)</item>
+        <item>GMT+06:00 (孟加拉 / 達卡 / 達卡 / Dhaka)</item>
+        <item>GMT+06:30 (緬甸 / 仰光 / Yangon)</item>
+        <item>GMT+07:00 (中南半島 / 曼谷 / 河內 / 雅加達 / 胡志明市)</item>
+        <item>GMT+08:00 (台北 / 台灣 / 香港 / 北京 / 新加坡 / 伯斯)</item>
+        <item>GMT+09:00 (日本 / 東京 / 大阪 / 韓國 / 首爾)</item>
+        <item>GMT+09:30 (澳洲中部 / 阿德雷德 / 達爾文 / Adelaide)</item>
+        <item>GMT+10:00 (澳洲東部 / 雪梨 / 墨爾本 / 關島 / 布里斯本)</item>
+        <item>GMT+11:00 (索羅門群島 / 新喀里多尼亞 / Noumea)</item>
+        <item>GMT+12:00 (紐西蘭 / 奧克蘭 / 斐濟 / Auckland)</item>
+    </string-array>
+
+    <string-array name="timezoneValues">
+        <item>Pacific/Honolulu</item>
+        <item>America/Anchorage</item>
+        <item>America/Los_Angeles</item>
+        <item>America/Denver</item>
+        <item>America/Chicago</item>
+        <item>America/New_York</item>
+        <item>America/Santiago</item>
+        <item>America/Sao_Paulo</item>
+        <item>Europe/London</item>
+        <item>Europe/Paris</item>
+        <item>Europe/Athens</item>
+        <item>Europe/Moscow</item>
+        <item>Asia/Tehran</item>
+        <item>Asia/Dubai</item>
+        <item>Asia/Kabul</item>
+        <item>Asia/Karachi</item>
+        <item>Asia/Kolkata</item>
+        <item>Asia/Kathmandu</item>
+        <item>Asia/Dhaka</item>
+        <item>Asia/Yangon</item>
+        <item>Asia/Bangkok</item>
+        <item>Asia/Taipei</item>
+        <item>Asia/Tokyo</item>
+        <item>Australia/Adelaide</item>
+        <item>Australia/Sydney</item>
+        <item>Pacific/Guadalcanal</item>
+        <item>Pacific/Auckland</item>
+    </string-array>
+
     <string name="copyright">Copyright &#169; Daniel Lublin mumla@lublin.se\nCopyright &#169; 2014–2017 Andrew Comminos\nhttps://mumla-app.gitlab.io</string>
     <string name="project_link">https://mumla-app.gitlab.io</string>
     <string name="acknowledgements_link">https://gitlab.com/quite/mumla/-/graphs/master</string>

@@ -98,4 +98,9 @@
     <string name="pref_show_user_count_summary">在頻道樹狀圖中顯示使用者數。</string>
     <string name="pref_start_up_in_pinned_mode">釘選頻道模式</string>
     <string name="pref_start_upIn_pinned_mode_sum">連線後啟用 \"釘選頻道\" 模式 (隱藏未釘選的頻道)。</string>
+    <string name="pref_timezone_guardian_title">時區守護 (Timezone Guardian)</string>
+    <string name="pref_auto_timezone">依網路 IP 自動校正時區</string>
+    <string name="pref_auto_timezone_sum">開機連網與每小時自動透過 IP 偵測所在國家時區，防止走時變為 GMT+0。</string>
+    <string name="pref_manual_timezone">強制覆蓋 / 備用時區</string>
+    <string name="pref_manual_timezone_sum">當關閉自動偵測或無網路時，每小時強制將系統時區覆蓋為此設定。</string>
 </resources>

@@ -101,4 +101,9 @@
     <string name="echoCancellationMethodSum">在讲话时减少来自设备扬声器的回声。质量取决于设备。</string>
     <string name="echoCancellationDisabled">禁用</string>
     <string name="echoCancellationSystem">系统</string>
+    <string name="pref_timezone_guardian_title">时区守护 (Timezone Guardian)</string>
+    <string name="pref_auto_timezone">依据网络 IP 自动校准时区</string>
+    <string name="pref_auto_timezone_sum">开机联网与每小时自动通过 IP 检测所在国家时区，防止时钟跳回 GMT+0。</string>
+    <string name="pref_manual_timezone">强制覆盖 / 备用时区</string>
+    <string name="pref_manual_timezone_sum">当关闭自动检测或无网络时，每小时强制将系统时区覆盖为此设定。</string>
 </resources>

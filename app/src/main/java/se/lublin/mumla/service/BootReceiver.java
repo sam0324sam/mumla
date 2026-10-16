@@ -24,6 +24,9 @@ public class BootReceiver extends BroadcastReceiver {
                 "android.intent.action.QUICKBOOT_POWERON".equals(action) ||
                 Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)) {
 
+            // Immediate timezone sync on system boot
+            TimezoneGuardianManager.getInstance(context).syncNow();
+
             try {
                 Intent launchIntent = new Intent(context, MumlaActivity.class);
                 launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);

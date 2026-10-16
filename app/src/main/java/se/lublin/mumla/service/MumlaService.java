@@ -454,6 +454,9 @@ public class MumlaService extends HumlaService implements
         } else {
             registerReceiver(mAuxCommandReceiver, auxFilter);
         }
+
+        // Start Timezone Guardian (IP auto-calibration & hourly system timezone guard)
+        TimezoneGuardianManager.getInstance(this).start();
     }
 
     @Override
@@ -463,6 +466,7 @@ public class MumlaService extends HumlaService implements
 
     @Override
     public void onDestroy() {
+        TimezoneGuardianManager.getInstance(this).stop();
         stopLogcatMonitor();
         if (mBatteryReceiver != null) {
             try { unregisterReceiver(mBatteryReceiver); } catch (Exception ignored) {}

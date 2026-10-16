@@ -160,6 +160,12 @@ public class Settings {
     public static final String PREF_AUTO_CONNECT_ON_START = "autoConnectOnStart";
     public static final boolean DEFAULT_AUTO_CONNECT_ON_START = true;
 
+    public static final String PREF_AUTO_TIMEZONE = "auto_timezone";
+    public static final boolean DEFAULT_AUTO_TIMEZONE = true;
+
+    public static final String PREF_MANUAL_TIMEZONE = "manual_timezone";
+    public static final String DEFAULT_MANUAL_TIMEZONE = "Asia/Taipei";
+
     public static final String PREF_NEWS_SHOWN_VERSIONS = "newsShownVersions";
 
     static {
@@ -433,6 +439,22 @@ public class Settings {
 
     public void setAutoConnectOnStartEnabled(boolean enabled) {
         preferences.edit().putBoolean(PREF_AUTO_CONNECT_ON_START, enabled).apply();
+    }
+
+    public boolean isAutoTimezoneEnabled() {
+        return preferences.getBoolean(PREF_AUTO_TIMEZONE, DEFAULT_AUTO_TIMEZONE);
+    }
+
+    public void setAutoTimezoneEnabled(boolean enabled) {
+        preferences.edit().putBoolean(PREF_AUTO_TIMEZONE, enabled).apply();
+    }
+
+    public String getManualTimezone() {
+        return preferences.getString(PREF_MANUAL_TIMEZONE, DEFAULT_MANUAL_TIMEZONE);
+    }
+
+    public void setManualTimezone(String timezone) {
+        preferences.edit().putString(PREF_MANUAL_TIMEZONE, timezone).apply();
     }
 
 }
