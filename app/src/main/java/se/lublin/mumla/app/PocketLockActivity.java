@@ -84,18 +84,18 @@ public class PocketLockActivity extends Activity {
         sInstance = this;
 
         try {
-            mToneGenerator = new ToneGenerator(AudioManager.STREAM_SYSTEM, 90);
+            mToneGenerator = new ToneGenerator(AudioManager.STREAM_MUSIC, 15);
         } catch (Exception ignored) {}
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 AudioAttributes attrs = new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                         .build();
                 mSoundPool = new SoundPool.Builder().setMaxStreams(5).setAudioAttributes(attrs).build();
             } else {
-                mSoundPool = new SoundPool(5, AudioManager.STREAM_SYSTEM, 0);
+                mSoundPool = new SoundPool(5, AudioManager.STREAM_MUSIC, 0);
             }
             mClickSoundId = mSoundPool.load(this, R.raw.key_click, 1);
         } catch (Exception ignored) {}
@@ -231,7 +231,7 @@ public class PocketLockActivity extends Activity {
 
         // 口袋盲操極速短促滴聲反饋 (25ms SoundPool，記憶體常駐零延遲，支援多聲道混音)
         if (mSoundPool != null && mClickSoundId != 0) {
-            mSoundPool.play(mClickSoundId, 1.0f, 1.0f, 1, 0, 1.0f);
+            mSoundPool.play(mClickSoundId, 0.12f, 0.12f, 1, 0, 1.0f);
         } else if (mToneGenerator != null) {
             try {
                 mToneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP, 25);

@@ -23,23 +23,23 @@ public class PttSoundManager {
         initTracks();
     }
 
-    // Amplitude constants for synthesized tones
-    private static final int PERMIT_TONE_AMPLITUDE = 8000; // 1/3 of original 24000 for comfortable volume
-    private static final int BUSY_TONE_AMPLITUDE = 26000;
-    private static final int RELEASE_TONE_AMPLITUDE = 20000;
+    // Unified reference amplitude: 1/3 of previous 8000 permit tone (~8.2% of full-scale 32767)
+    private static final int PERMIT_TONE_AMPLITUDE = 2700;
+    private static final int BUSY_TONE_AMPLITUDE = 2700;
+    private static final int RELEASE_TONE_AMPLITUDE = 2700;
 
     private void initTracks() {
         try {
-            // 1. Permit Tone (Motorola / DMR style: 900Hz 50ms + 1200Hz 50ms, volume reduced to 1/3)
+            // 1. Permit Tone (Motorola / DMR style: 900Hz 50ms + 1200Hz 50ms)
             short[] permitSamples = generateDualTone(900, 50, 1200, 50, PERMIT_TONE_AMPLITUDE);
             mPermitTrack = createTrack(permitSamples);
 
             // 2. Busy Tone (Commercial LMR/DMR reject bonk: 320Hz 90ms + 30ms silence + 260Hz 120ms)
-            short[] busySamples = generateChirp(320, 90, 30, 260, 120);
+            short[] busySamples = generateChirp(320, 90, 30, 260, 120, BUSY_TONE_AMPLITUDE);
             mBusyTrack = createTrack(busySamples);
 
             // 3. Release Tone (PTT release roger: 650Hz 40ms)
-            short[] releaseSamples = generateTone(650, 40);
+            short[] releaseSamples = generateTone(650, 40, RELEASE_TONE_AMPLITUDE);
             mReleaseTrack = createTrack(releaseSamples);
         } catch (Exception e) {
             Log.e(TAG, "Failed to initialize PttSoundManager AudioTracks", e);
@@ -52,7 +52,7 @@ public class PttSoundManager {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             track = new AudioTrack(
                     new AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_INSTANT)
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
                             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                             .build(),
                     new AudioFormat.Builder()
@@ -93,28 +93,28 @@ public class PttSoundManager {
         return buffer;
     }
 
-    private short[] generateTone(int freq, int ms) {
+    private short[] generateTone(int freq, int ms, int amplitude) {
         int count = (SAMPLE_RATE * ms) / 1000;
         short[] buffer = new short[count];
         for (int i = 0; i < count; i++) {
             double angle = 2.0 * Math.PI * i / (SAMPLE_RATE / (double) freq);
-            buffer[i] = (short) (Math.sin(angle) * 20000);
+            buffer[i] = (short) (Math.sin(angle) * amplitude);
         }
         return buffer;
     }
 
-    private short[] generateChirp(int freq1, int ms1, int gapMs, int freq2, int ms2) {
+    private short[] generateChirp(int freq1, int ms1, int gapMs, int freq2, int ms2, int amplitude) {
         int count1 = (SAMPLE_RATE * ms1) / 1000;
         int gapCount = (SAMPLE_RATE * gapMs) / 1000;
         int count2 = (SAMPLE_RATE * ms2) / 1000;
         short[] buffer = new short[count1 + gapCount + count2];
         for (int i = 0; i < count1; i++) {
             double angle = 2.0 * Math.PI * i / (SAMPLE_RATE / (double) freq1);
-            buffer[i] = (short) (Math.sin(angle) * 26000);
+            buffer[i] = (short) (Math.sin(angle) * amplitude);
         }
         for (int i = 0; i < count2; i++) {
             double angle = 2.0 * Math.PI * i / (SAMPLE_RATE / (double) freq2);
-            buffer[count1 + gapCount + i] = (short) (Math.sin(angle) * 26000);
+            buffer[count1 + gapCount + i] = (short) (Math.sin(angle) * amplitude);
         }
         return buffer;
     }

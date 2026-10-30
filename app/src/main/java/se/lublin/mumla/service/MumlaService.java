@@ -352,7 +352,7 @@ public class MumlaService extends HumlaService implements
                         user.getTalkState() == TalkState.TALKING &&
                         mPTTSoundEnabled) {
                     AudioManager audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
-                    audioManager.playSoundEffect(AudioManager.FX_KEYPRESS_STANDARD, -1);
+                    audioManager.playSoundEffect(AudioManager.FX_KEYPRESS_STANDARD, 0.15f);
                 }
             } else {
                 // Incoming voice from another user in current channel
@@ -410,7 +410,7 @@ public class MumlaService extends HumlaService implements
         // Initialize zero-latency PTT sound synthesizer
         mPttSoundManager = new PttSoundManager();
         try {
-            mToneGenerator = new ToneGenerator(AudioManager.STREAM_SYSTEM, 90);
+            mToneGenerator = new ToneGenerator(AudioManager.STREAM_MUSIC, 15);
         } catch (Exception ignored) {}
 
         // Register PTT broadcast receiver (Anysecu hardware key + Mumla standard IPC)
@@ -1246,6 +1246,7 @@ public class MumlaService extends HumlaService implements
             mTimePlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
             mTimePlayer.setDataSource(cacheFile.getAbsolutePath());
             mTimePlayer.prepare();
+            mTimePlayer.setVolume(0.25f, 0.25f);
             mTimePlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
                 @Override
                 public void onCompletion(MediaPlayer mp) {
@@ -1364,6 +1365,7 @@ public class MumlaService extends HumlaService implements
             mBatteryPlayer = MediaPlayer.create(this, resId);
             if (mBatteryPlayer != null) {
                 mBatteryPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+                mBatteryPlayer.setVolume(0.20f, 0.20f);
                 mBatteryPlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
                     @Override
                     public void onCompletion(MediaPlayer mp) {
