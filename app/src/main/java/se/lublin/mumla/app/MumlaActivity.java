@@ -517,6 +517,19 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
     }
 
     @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (PocketLockActivity.isLockedOrRecentlyUnlocked()) {
+            int code = event.getKeyCode();
+            if (code == KeyEvent.KEYCODE_F4 || code == 134 ||
+                code == KeyEvent.KEYCODE_VOLUME_DOWN || code == 25 ||
+                code == KeyEvent.KEYCODE_VOLUME_UP || code == 24) {
+                return true;
+            }
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         if (mService != null && keyCode == mSettings.getPushToTalkKey()) {
             mService.onTalkKeyDown();

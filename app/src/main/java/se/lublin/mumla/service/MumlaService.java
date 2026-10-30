@@ -1021,31 +1021,23 @@ public class MumlaService extends HumlaService implements
 
     private void playTotWarningTone() {
         markLocalSoundPlaying(500);
-        try {
-            if (mToneGenerator != null) {
-                mToneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP2, 100);
-                mUiHandler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            if (mToneGenerator != null) {
-                                mToneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP2, 100);
-                            }
-                        } catch (Exception ignored) {}
-                    }
-                }, 140);
-                mUiHandler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            if (mToneGenerator != null) {
-                                mToneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP2, 120);
-                            }
-                        } catch (Exception ignored) {}
-                    }
-                }, 280);
-            }
-        } catch (Exception ignored) {}
+        if (mPttSoundManager != null) {
+            mPttSoundManager.playTotWarningTone();
+        }
+    }
+
+    public void playPocketUnlockTickTone() {
+        markLocalSoundPlaying(150);
+        if (mPttSoundManager != null) {
+            mPttSoundManager.playUnlockTickTone();
+        }
+    }
+
+    public void playPocketUnlockAckTone() {
+        markLocalSoundPlaying(400);
+        if (mPttSoundManager != null) {
+            mPttSoundManager.playUnlockAckTone();
+        }
     }
 
     public synchronized void triggerPocketLock() {
@@ -1053,14 +1045,21 @@ public class MumlaService extends HumlaService implements
             return;
         }
         Log.i(TAG, "F4 / Volume-Down Long Press -> Triggering Pocket Lock Mode");
+        markLocalSoundPlaying(600);
         try {
-            if (mToneGenerator != null) {
-                mToneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP2, 350);
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                PowerManager.WakeLock wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Mumla:PocketLockTone");
+                wl.acquire(800);
             }
         } catch (Exception ignored) {}
 
+        if (mPttSoundManager != null) {
+            mPttSoundManager.playLockTone();
+        }
+
         Intent lockIntent = new Intent(this, PocketLockActivity.class);
-        lockIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        lockIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NO_ANIMATION);
         startActivity(lockIntent);
     }
 
@@ -1096,6 +1095,13 @@ public class MumlaService extends HumlaService implements
                                     @Override
                                     public void run() {
                                         triggerPocketLock();
+                                    }
+                                });
+                            } else if (PocketLockActivity.isLocked() && line.contains("unipro.hotkey.p3.down")) {
+                                mUiHandler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        PocketLockActivity.notifyHardwareVolumeDownClick();
                                     }
                                 });
                             } else if (PocketLockActivity.isLocked() && line.contains("keycode=24 ") && line.contains("interactive=false")) {

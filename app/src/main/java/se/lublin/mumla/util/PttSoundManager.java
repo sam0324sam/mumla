@@ -18,6 +18,10 @@ public class PttSoundManager {
     private AudioTrack mPermitTrack;
     private AudioTrack mBusyTrack;
     private AudioTrack mReleaseTrack;
+    private AudioTrack mLockTrack;
+    private AudioTrack mUnlockTickTrack;
+    private AudioTrack mUnlockAckTrack;
+    private AudioTrack mTotWarningTrack;
 
     public PttSoundManager() {
         initTracks();
@@ -27,6 +31,10 @@ public class PttSoundManager {
     private static final int PERMIT_TONE_AMPLITUDE = 2700;
     private static final int BUSY_TONE_AMPLITUDE = 2700;
     private static final int RELEASE_TONE_AMPLITUDE = 2700;
+    private static final int LOCK_TONE_AMPLITUDE = 2700;
+    private static final int UNLOCK_TICK_AMPLITUDE = 2200;
+    private static final int UNLOCK_ACK_AMPLITUDE = 2700;
+    private static final int TOT_WARNING_AMPLITUDE = 2700;
 
     private void initTracks() {
         try {
@@ -41,6 +49,22 @@ public class PttSoundManager {
             // 3. Release Tone (PTT release roger: 650Hz 40ms)
             short[] releaseSamples = generateTone(650, 40, RELEASE_TONE_AMPLITUDE);
             mReleaseTrack = createTrack(releaseSamples);
+
+            // 4. Pocket Lock Entry Tone (Descending two-tone: 1200Hz 70ms + 25ms gap + 800Hz 100ms)
+            short[] lockSamples = generateChirp(1200, 70, 25, 800, 100, LOCK_TONE_AMPLITUDE);
+            mLockTrack = createTrack(lockSamples);
+
+            // 5. Pocket Unlock 5-Click Tick Tone (Crisp walkie-talkie pip: 1050Hz 20ms)
+            short[] tickSamples = generateTone(1050, 20, UNLOCK_TICK_AMPLITUDE);
+            mUnlockTickTrack = createTrack(tickSamples);
+
+            // 6. Pocket Unlock ACK Tone (Ascending two-tone: 800Hz 60ms + 25ms gap + 1200Hz 90ms)
+            short[] unlockAckSamples = generateChirp(800, 60, 25, 1200, 90, UNLOCK_ACK_AMPLITUDE);
+            mUnlockAckTrack = createTrack(unlockAckSamples);
+
+            // 7. TOT 60s Warning Tone (Triple alert beep: 1000Hz 80ms x 3)
+            short[] totSamples = generateTripleBeep(1000, 80, 40, TOT_WARNING_AMPLITUDE);
+            mTotWarningTrack = createTrack(totSamples);
         } catch (Exception e) {
             Log.e(TAG, "Failed to initialize PttSoundManager AudioTracks", e);
         }
@@ -119,6 +143,20 @@ public class PttSoundManager {
         return buffer;
     }
 
+    private short[] generateTripleBeep(int freq, int beepMs, int gapMs, int amplitude) {
+        int beepCount = (SAMPLE_RATE * beepMs) / 1000;
+        int gapCount = (SAMPLE_RATE * gapMs) / 1000;
+        short[] buffer = new short[beepCount * 3 + gapCount * 2];
+        for (int b = 0; b < 3; b++) {
+            int offset = b * (beepCount + gapCount);
+            for (int i = 0; i < beepCount; i++) {
+                double angle = 2.0 * Math.PI * i / (SAMPLE_RATE / (double) freq);
+                buffer[offset + i] = (short) (Math.sin(angle) * amplitude);
+            }
+        }
+        return buffer;
+    }
+
     public synchronized void playPermitTone() {
         playTrack(mPermitTrack);
     }
@@ -129,6 +167,22 @@ public class PttSoundManager {
 
     public synchronized void playReleaseTone() {
         playTrack(mReleaseTrack);
+    }
+
+    public synchronized void playLockTone() {
+        playTrack(mLockTrack);
+    }
+
+    public synchronized void playUnlockTickTone() {
+        playTrack(mUnlockTickTrack);
+    }
+
+    public synchronized void playUnlockAckTone() {
+        playTrack(mUnlockAckTrack);
+    }
+
+    public synchronized void playTotWarningTone() {
+        playTrack(mTotWarningTrack);
     }
 
     private void playTrack(AudioTrack track) {
@@ -155,6 +209,22 @@ public class PttSoundManager {
         if (mReleaseTrack != null) {
             try { mReleaseTrack.release(); } catch (Exception ignored) {}
             mReleaseTrack = null;
+        }
+        if (mLockTrack != null) {
+            try { mLockTrack.release(); } catch (Exception ignored) {}
+            mLockTrack = null;
+        }
+        if (mUnlockTickTrack != null) {
+            try { mUnlockTickTrack.release(); } catch (Exception ignored) {}
+            mUnlockTickTrack = null;
+        }
+        if (mUnlockAckTrack != null) {
+            try { mUnlockAckTrack.release(); } catch (Exception ignored) {}
+            mUnlockAckTrack = null;
+        }
+        if (mTotWarningTrack != null) {
+            try { mTotWarningTrack.release(); } catch (Exception ignored) {}
+            mTotWarningTrack = null;
         }
     }
 }
