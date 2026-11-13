@@ -246,7 +246,34 @@ public class ChannelChatFragment extends HumlaServiceFragment implements ChatTar
     public void addChatMessage(IChatMessage message, boolean scroll) {
         if (mChatAdapter == null) return;
 
+        // Prune older roster summary messages to prevent chat clutter and save memory
+        if (message instanceof IChatMessage.TextMessage) {
+            IChatMessage.TextMessage tm = (IChatMessage.TextMessage) message;
+            String text = tm.getMessage() != null ? tm.getMessage().getMessage() : null;
+            if (text != null && text.contains("【全員最近定位紀錄總表】")) {
+                for (int i = mChatAdapter.getCount() - 1; i >= 0; i--) {
+                    IChatMessage item = mChatAdapter.getItem(i);
+                    if (item instanceof IChatMessage.TextMessage) {
+                        IMessage oldMsg = ((IChatMessage.TextMessage) item).getMessage();
+                        if (oldMsg != null && oldMsg.getMessage() != null && oldMsg.getMessage().contains("【全員最近定位紀錄總表】")) {
+                            mChatAdapter.remove(item);
+                        }
+                    }
+                }
+            }
+        }
+
         mChatAdapter.add(message);
+
+        // Cap maximum chat items at 200 to guarantee OOM safety on low-memory devices
+        while (mChatAdapter.getCount() > 200) {
+            IChatMessage oldest = mChatAdapter.getItem(0);
+            if (oldest != null) {
+                mChatAdapter.remove(oldest);
+            } else {
+                break;
+            }
+        }
 
         if (scroll) {
             mChatList.post(new Runnable() {

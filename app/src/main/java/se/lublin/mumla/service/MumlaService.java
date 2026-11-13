@@ -231,6 +231,7 @@ public class MumlaService extends HumlaService implements
                 // Request avatar data if available.
                 requestAvatar(user.getSession());
             }
+            GpsBeaconManager.getInstance(MumlaService.this).onUserJoinedServer(user);
         }
 
         @Override
@@ -269,10 +270,14 @@ public class MumlaService extends HumlaService implements
                 // Update avatar data if available.
                 requestAvatar(user.getSession());
             }
+
+            GpsBeaconManager.getInstance(MumlaService.this).onUserCommentUpdated(user);
         }
 
         @Override
         public void onMessageLogged(IMessage message) {
+            boolean isGpsMessage = GpsBeaconManager.getInstance(MumlaService.this).onIncomingChatMessage(message);
+
             // Split on / strip all HTML tags.
             Document parsedMessage = Jsoup.parseBodyFragment(message.getMessage());
             String strippedMessage = parsedMessage.text();
@@ -298,8 +303,9 @@ public class MumlaService extends HumlaService implements
             String formattedTtsMessage = getString(R.string.notification_message,
                     message.getActorName(), ttsMessage);
 
-            // Read if TTS is enabled, the message is less than threshold, is a text message, and not deafened
-            if(mSettings.isTextToSpeechEnabled() &&
+            // Read if TTS is enabled, the message is less than threshold, is a text message, not deafened, and not a GPS beacon
+            if(!isGpsMessage &&
+                    mSettings.isTextToSpeechEnabled() &&
                     mTTS != null &&
                     formattedTtsMessage.length() <= TTS_THRESHOLD &&
                     getSessionUser() != null &&
@@ -457,6 +463,8 @@ public class MumlaService extends HumlaService implements
 
         // Start Timezone Guardian (IP auto-calibration & hourly system timezone guard)
         TimezoneGuardianManager.getInstance(this).start();
+        // Start Low-Power 5-Minute GPS Beacon Manager
+        GpsBeaconManager.getInstance(this).start(this);
     }
 
     @Override
@@ -466,6 +474,7 @@ public class MumlaService extends HumlaService implements
 
     @Override
     public void onDestroy() {
+        GpsBeaconManager.getInstance(this).stop();
         TimezoneGuardianManager.getInstance(this).stop();
         stopLogcatMonitor();
         if (mBatteryReceiver != null) {
@@ -542,6 +551,8 @@ public class MumlaService extends HumlaService implements
         if (mSettings.isHandsetMode()) {
             setProximitySensorOn(true);
         }
+
+        GpsBeaconManager.getInstance(this).onServerSynchronized();
     }
 
     @Override
@@ -1308,6 +1319,8 @@ public class MumlaService extends HumlaService implements
     }
 
     private void handleBatteryUpdate(int percent, boolean isCharging) {
+        GpsBeaconManager.getInstance(this).updateBatteryStatus(percent, isCharging);
+
         if (!mBatteryMonitorInitialized) {
             mBatteryMonitorInitialized = true;
             for (int t : BATTERY_THRESHOLDS) {
@@ -1337,6 +1350,9 @@ public class MumlaService extends HumlaService implements
                 } else {
                     Log.i(TAG, "Battery threshold " + t + "% hit (" + percent + "%), announcing now.");
                     playBatteryVoice(resId);
+                }
+                if (t <= 20) {
+                    GpsBeaconManager.getInstance(this).triggerImmediateBeacon("低電量" + t + "%告警");
                 }
                 break;
             }
