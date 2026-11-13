@@ -66,7 +66,7 @@ public class GpsBeaconManager {
 
     public static final long BEACON_INTERVAL_MS = 5 * 60 * 1000L; // 5 minutes
     public static final long INITIAL_DELAY_MS = 15 * 1000L;      // 15 seconds after start
-    public static final long GPS_FIX_TIMEOUT_MS = 30 * 1000L;    // 30 seconds hardware timeout
+    public static final long GPS_FIX_TIMEOUT_MS = 45 * 1000L;    // 45 seconds warm fix timeout
 
     public static final String HEADER_BEACON = "📍 [定位回報]";
     public static final String HEADER_ROSTER = "📋 【全員最近定位紀錄總表】";
@@ -444,10 +444,15 @@ public class GpsBeaconManager {
 
         try {
             if (gpsEnabled) {
-                lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0L, 0f, listener, Looper.getMainLooper());
+                // Assist Qualcomm GPS with network time and XTRA injection over Wi-Fi
+                try {
+                    lm.sendExtraCommand(LocationManager.GPS_PROVIDER, "force_time_injection", null);
+                    lm.sendExtraCommand(LocationManager.GPS_PROVIDER, "force_xtra_injection", null);
+                } catch (Exception ignored) {}
+                lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, listener, Looper.getMainLooper());
             }
             if (netEnabled) {
-                lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 0L, 0f, listener, Looper.getMainLooper());
+                lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000L, 0f, listener, Looper.getMainLooper());
             }
         } catch (SecurityException se) {
             Log.w(TAG, "SecurityException requesting location updates: " + se.getMessage());
@@ -466,17 +471,22 @@ public class GpsBeaconManager {
             Location bufferedNet = mActiveNetworkFix;
             cancelActiveFixListener();
             if (bufferedNet != null) {
-                Log.i(TAG, "GPS 8s timeout reached; using Network fix.");
+                Log.i(TAG, "GPS timeout reached; using Network fix.");
                 mLastAccurateLocation = bufferedNet;
                 mLastFixBssid = getConnectedWifiBssid();
                 String tag = customReasonTag != null ? customReasonTag : "基地台/Wi-Fi";
                 onLocationResolved(bufferedNet.getLatitude(), bufferedNet.getLongitude(), tag, true);
             } else {
-                Log.i(TAG, "GPS 8s timeout reached with no active fix; checking lastKnown / IP fallback.");
+                Log.i(TAG, "GPS timeout reached with no active fix; checking lastKnown / Wi-Fi fallback.");
                 resolveFallbackAfterTimeout(lm, customReasonTag);
             }
         };
-        mMainHandler.postDelayed(mFixTimeoutRunnable, GPS_FIX_TIMEOUT_MS);
+
+        // If this device has no prior GPS fix (Cold Start without A-GPS on Android Go),
+        // give GPS up to 10 minutes of uninterrupted tracking to acquire ephemeris!
+        // As soon as onLocationChanged fires, cancelActiveFixListener() stops it immediately.
+        long timeoutMs = (mLastAccurateLocation == null) ? (10 * 60 * 1000L) : GPS_FIX_TIMEOUT_MS;
+        mMainHandler.postDelayed(mFixTimeoutRunnable, timeoutMs);
     }
 
     private void cancelActiveFixListener() {
@@ -522,8 +532,35 @@ public class GpsBeaconManager {
             String tag = customReasonTag != null ? customReasonTag : "最後已知GPS";
             onLocationResolved(bestLast.getLatitude(), bestLast.getLongitude(), tag, false);
         } else {
-            Log.w(TAG, "No GPS fix or last known coordinates available; skipping beacon to avoid fake IP location.");
+            Location peerLoc = findPeerLocationFallback();
+            if (peerLoc != null) {
+                mLastAccurateLocation = peerLoc;
+                mLastFixBssid = getConnectedWifiBssid();
+                String tag = customReasonTag != null ? customReasonTag : "Wi-Fi隊友座標";
+                onLocationResolved(peerLoc.getLatitude(), peerLoc.getLongitude(), tag, false);
+                Log.i(TAG, "Applied peer location fallback on same network: " + peerLoc.getLatitude() + "," + peerLoc.getLongitude());
+            } else {
+                Log.w(TAG, "No GPS fix or last known coordinates available; skipping beacon to avoid fake IP location.");
+            }
         }
+    }
+
+    private Location findPeerLocationFallback() {
+        String selfName = resolveSelfUserName();
+        long now = System.currentTimeMillis();
+        for (LocationRecord rec : mRosterLocations.values()) {
+            if (rec != null && !rec.userName.equalsIgnoreCase(selfName) && rec.latitude != 0 && rec.longitude != 0) {
+                // If received within the past 4 hours
+                if (now - rec.timestampMs < 4 * 3600 * 1000L) {
+                    Location loc = new Location("peer_roster");
+                    loc.setLatitude(rec.latitude);
+                    loc.setLongitude(rec.longitude);
+                    loc.setTime(rec.timestampMs);
+                    return loc;
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -807,6 +844,16 @@ public class GpsBeaconManager {
                     if (rec != null && rec.userName != null) {
                         mRosterLocations.put(rec.userName, rec);
                     }
+                }
+            }
+            if (mLastAccurateLocation == null) {
+                LocationRecord selfRec = mRosterLocations.get(resolveSelfUserName());
+                if (selfRec != null && selfRec.latitude != 0 && selfRec.longitude != 0) {
+                    Location loc = new Location("persisted");
+                    loc.setLatitude(selfRec.latitude);
+                    loc.setLongitude(selfRec.longitude);
+                    loc.setTime(selfRec.timestampMs);
+                    mLastAccurateLocation = loc;
                 }
             }
         } catch (Exception ignored) {}
