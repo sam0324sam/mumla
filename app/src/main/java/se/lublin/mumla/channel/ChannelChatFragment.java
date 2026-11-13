@@ -17,6 +17,8 @@
 
 package se.lublin.mumla.channel;
 
+import se.lublin.mumla.app.DialogUtils;
+
 import static android.Manifest.permission.READ_EXTERNAL_STORAGE;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.os.Build.VERSION.SDK_INT;
@@ -230,6 +232,12 @@ public class ChannelChatFragment extends HumlaServiceFragment implements ChatTar
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
+        if (item.getItemId() == R.id.menu_roster_locations) {
+            if (getActivity() != null) {
+                DialogUtils.showRosterLocationsDialog(getActivity());
+            }
+            return true;
+        }
         if (item.getItemId() == R.id.menu_clear_chat) {
             clear();
             return true;
@@ -408,6 +416,14 @@ public class ChannelChatFragment extends HumlaServiceFragment implements ChatTar
             return;
         }
         String message = mChatTextEdit.getText().toString();
+        String trimmed = message.trim();
+        if ("loc".equalsIgnoreCase(trimmed) || "/loc".equalsIgnoreCase(trimmed) || "定位".equals(trimmed)) {
+            mChatTextEdit.setText("");
+            if (getActivity() != null) {
+                DialogUtils.showRosterLocationsDialog(getActivity());
+            }
+            return;
+        }
         try {
             sendMessage(message);
             mChatTextEdit.setText("");

@@ -3,9 +3,11 @@ package se.lublin.mumla.app;
 import static androidx.core.text.HtmlCompat.fromHtml;
 
 import android.content.Context;
+import android.text.method.LinkMovementMethod;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
@@ -19,6 +21,7 @@ import java.util.Set;
 import se.lublin.mumla.BuildConfig;
 import se.lublin.mumla.R;
 import se.lublin.mumla.Settings;
+import se.lublin.mumla.service.GpsBeaconManager;
 
 public final class DialogUtils {
     // Preventing instantiation
@@ -99,6 +102,41 @@ public final class DialogUtils {
                     }
                     dialog.dismiss();
                 })
+                .show();
+    }
+
+    /**
+     * Shows a popup dialog displaying all team members' latest reported locations,
+     * battery percentage, timestamp, and clickable map links (supporting both online and offline members).
+     */
+    public static void showRosterLocationsDialog(Context context) {
+        if (context == null) return;
+        GpsBeaconManager mgr = GpsBeaconManager.getInstance(context);
+        if (mgr == null || mgr.getRosterLocationsMap().isEmpty()) {
+            new MaterialAlertDialogBuilder(context)
+                    .setTitle(R.string.action_roster_locations)
+                    .setMessage(R.string.roster_locations_empty)
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show();
+            return;
+        }
+
+        String html = mgr.getRosterSummaryHtml();
+        TextView textView = new TextView(context);
+        int pad = (int) (18 * context.getResources().getDisplayMetrics().density);
+        textView.setPadding(pad, pad, pad, pad);
+        textView.setText(fromHtml(html, 0));
+        textView.setMovementMethod(LinkMovementMethod.getInstance());
+        textView.setTextSize(14.5f);
+        textView.setLineSpacing(4f, 1.15f);
+
+        ScrollView scrollView = new ScrollView(context);
+        scrollView.addView(textView);
+
+        new MaterialAlertDialogBuilder(context)
+                .setTitle(R.string.action_roster_locations)
+                .setView(scrollView)
+                .setPositiveButton(android.R.string.ok, null)
                 .show();
     }
 

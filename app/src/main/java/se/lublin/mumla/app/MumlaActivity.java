@@ -489,6 +489,10 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
     public boolean onPrepareOptionsMenu(Menu menu) {
         MenuItem disconnectButton = menu.findItem(R.id.action_disconnect);
         disconnectButton.setVisible(mService != null && mService.isConnected());
+        MenuItem rosterButton = menu.findItem(R.id.action_roster_locations);
+        if (rosterButton != null) {
+            rosterButton.setVisible(mService != null && mService.isConnected());
+        }
 
         return super.onPrepareOptionsMenu(menu);
     }
@@ -504,12 +508,20 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
     public boolean onOptionsItemSelected(@NotNull MenuItem item) {
         if (mDrawerToggle.onOptionsItemSelected(item))
             return true;
+        if (item.getItemId() == R.id.action_roster_locations) {
+            showRosterLocationsDialog();
+            return true;
+        }
         if (item.getItemId() == R.id.action_disconnect) {
             mUserManuallyDisconnected = true;
             getService().disconnect();
             return true;
         }
         return false;
+    }
+
+    public void showRosterLocationsDialog() {
+        DialogUtils.showRosterLocationsDialog(this);
     }
 
     @Override

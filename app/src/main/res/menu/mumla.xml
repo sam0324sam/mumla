@@ -17,6 +17,11 @@
 
 <menu xmlns:android="http://schemas.android.com/apk/res/android"
       xmlns:app="http://schemas.android.com/apk/res-auto">
+    <item android:id="@+id/action_roster_locations"
+        android:title="@string/action_roster_locations"
+        android:icon="@drawable/ic_server_location"
+        android:orderInCategory="10"
+        app:showAsAction="ifRoom"/>
     <item android:id="@+id/action_disconnect"
         android:title="@string/disconnect"
         android:orderInCategory="99"

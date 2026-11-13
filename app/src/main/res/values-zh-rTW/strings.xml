@@ -190,4 +190,7 @@
     <string name="chat_message_tts_short_link">(連結至 %1$s)</string>
     <string name="drawer_open">開啟側邊欄</string>
     <string name="drawer_close">關閉側邊欄</string>
+
+    <string name="action_roster_locations">📍 隊員位置看板</string>
+    <string name="roster_locations_empty">目前尚無隊員定位回報紀錄。</string>
 </resources>

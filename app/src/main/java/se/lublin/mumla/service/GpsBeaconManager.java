@@ -269,16 +269,10 @@ public class GpsBeaconManager {
     }
 
     /**
-     * Called when a user connects to the server. If this device is synchronized,
-     * updates the channel description location board (Plan 1) without spamming chat.
+     * Called when a user connects to the server.
      */
     public void onUserJoinedServer(IUser joinedUser) {
-        if (!mStarted || joinedUser == null || mService == null || !mService.isConnectionEstablished()) {
-            return;
-        }
-        try {
-            updateChannelDescriptionWithRoster(mService.getSessionChannel());
-        } catch (Exception ignored) {}
+        // No action needed; each user updates their own comment and clients maintain local roster cache
     }
 
     /**
@@ -293,11 +287,6 @@ public class GpsBeaconManager {
             LocationRecord parsed = parseSingleBeaconMessage(user.getName(), comment, plain);
             if (parsed != null) {
                 updateRosterRecord(parsed);
-                if (mService != null) {
-                    try {
-                        updateChannelDescriptionWithRoster(mService.getSessionChannel());
-                    } catch (Exception ignored) {}
-                }
             }
         }
     }
@@ -605,32 +594,25 @@ public class GpsBeaconManager {
 
         try {
             String htmlMessage = formatSingleRecordHtml(record);
-            // Plan 1: Only update user comment (zero chat spam)
+            // Plan 1: Only update user comment (zero chat spam, Murmur allows without admin permissions)
             mService.setUserComment(selfSession, htmlMessage);
-            // Update channel description location board for all members
-            updateChannelDescriptionWithRoster(selfChannel);
-            Log.i(TAG, "Flushed GPS beacon for " + record.userName + " (" + record.sourceTag + ", " + record.batteryPercent + "%) to User Comment & Channel Description.");
+            Log.i(TAG, "Flushed GPS beacon for " + record.userName + " (" + record.sourceTag + ", " + record.batteryPercent + "%) to User Comment.");
         } catch (Exception e) {
-            Log.w(TAG, "Failed updating user comment/description, restoring to queue: " + e.getMessage());
+            Log.w(TAG, "Failed updating user comment, restoring to queue: " + e.getMessage());
             mPendingOutgoingRecord = record;
             persistPendingRecord(record);
         }
     }
 
     /**
-     * Updates the current channel description with the persistent roster summary (Plan 1).
+     * Returns the formatted roster summary HTML for displaying in UI dialogs.
      */
-    public void updateChannelDescriptionWithRoster(IChannel channel) {
-        if (channel == null || mService == null || !mService.isConnectionEstablished() || mRosterLocations.isEmpty()) {
-            return;
-        }
-        try {
-            String summaryHtml = formatRosterSummaryHtml();
-            mService.setChannelDescription(channel.getId(), summaryHtml);
-            Log.i(TAG, "Updated channel " + channel.getId() + " description with roster summary (" + mRosterLocations.size() + " members).");
-        } catch (Exception e) {
-            Log.d(TAG, "Channel description update skipped: " + e.getMessage());
-        }
+    public String getRosterSummaryHtml() {
+        return formatRosterSummaryHtml();
+    }
+
+    public Map<String, LocationRecord> getRosterLocationsMap() {
+        return mRosterLocations;
     }
 
     private void postRosterSummaryNow() {
@@ -679,19 +661,20 @@ public class GpsBeaconManager {
         });
 
         StringBuilder sb = new StringBuilder();
-        sb.append("<b>").append(HEADER_ROSTER).append("</b>");
+        sb.append("<b>").append(HEADER_ROSTER).append("</b><br/>");
         for (LocationRecord rec : sorted) {
             boolean online = onlineNames.contains(rec.userName);
-            String statusIcon = online ? "🟢 在線" : "🔴 離線";
+            String statusIcon = online ? "🟢 在線" : "⚪ 離線";
             String latStr = String.format(Locale.US, "%.6f", rec.latitude);
             String lonStr = String.format(Locale.US, "%.6f", rec.longitude);
             String mapsUrl = "https://maps.google.com/?q=" + latStr + "," + lonStr;
+            String chargeMark = rec.isCharging ? "⚡" : "";
             sb.append("<br/>• ").append(statusIcon).append(" <b>").append(escapeHtml(rec.userName)).append("</b>")
-                    .append(" (電量 ").append(rec.batteryPercent).append("% | ")
-                    .append(formatTime(rec.timestampMs)).append(" | ")
-                    .append(escapeHtml(rec.sourceTag)).append(") 👉 ")
-                    .append("<a href=\"").append(mapsUrl).append("\">📍 地圖 (")
-                    .append(latStr).append(", ").append(lonStr).append(")</a>");
+                    .append("<br/>&nbsp;&nbsp;&nbsp;&nbsp;🔋 電量 ").append(rec.batteryPercent).append("%").append(chargeMark)
+                    .append(" | 🕒 ").append(formatTime(rec.timestampMs))
+                    .append(" (").append(escapeHtml(rec.sourceTag)).append(")")
+                    .append("<br/>&nbsp;&nbsp;&nbsp;&nbsp;👉 <a href=\"").append(mapsUrl).append("\">📍 開啟地圖 (")
+                    .append(latStr).append(", ").append(lonStr).append(")</a><br/>");
         }
         return sb.toString();
     }

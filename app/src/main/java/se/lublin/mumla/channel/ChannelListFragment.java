@@ -17,6 +17,8 @@
 
 package se.lublin.mumla.channel;
 
+import se.lublin.mumla.app.DialogUtils;
+
 import static android.content.Context.RECEIVER_NOT_EXPORTED;
 
 import android.app.Activity;
@@ -329,6 +331,11 @@ public class ChannelListFragment extends HumlaServiceFragment implements OnChann
             return true;
         } else if (itemId == R.id.menu_search) {
             return false;
+        } else if (itemId == R.id.menu_roster_locations) {
+            if (getActivity() != null) {
+                DialogUtils.showRosterLocationsDialog(getActivity());
+            }
+            return true;
         } else if (itemId == R.id.menu_bluetooth) {
             item.setChecked(!item.isChecked());
             if (item.isChecked()) {

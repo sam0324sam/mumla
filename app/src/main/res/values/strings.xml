@@ -238,4 +238,7 @@
 
     <!-- Used only by flavor "foss" -->
     <string name="donate_foss">Donate</string>
+
+    <string name="action_roster_locations">Member Locations</string>
+    <string name="roster_locations_empty">No location beacon records available yet.</string>
 </resources>
