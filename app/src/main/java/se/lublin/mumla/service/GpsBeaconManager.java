@@ -48,6 +48,7 @@ import java.util.regex.Pattern;
 import se.lublin.humla.model.IChannel;
 import se.lublin.humla.model.IMessage;
 import se.lublin.humla.model.IUser;
+import se.lublin.mumla.Settings;
 
 /**
  * Low-power 5-minute GPS beacon manager for walkie-talkie devices.
@@ -532,7 +533,8 @@ public class GpsBeaconManager {
             String tag = customReasonTag != null ? customReasonTag : "最後已知GPS";
             onLocationResolved(bestLast.getLatitude(), bestLast.getLongitude(), tag, false);
         } else {
-            Location peerLoc = findPeerLocationFallback();
+            boolean peerWifiEnabled = Settings.getInstance(mContext).isPeerWifiLocationEnabled();
+            Location peerLoc = peerWifiEnabled ? findPeerLocationFallback() : null;
             if (peerLoc != null) {
                 mLastAccurateLocation = peerLoc;
                 mLastFixBssid = getConnectedWifiBssid();
@@ -849,11 +851,14 @@ public class GpsBeaconManager {
             if (mLastAccurateLocation == null) {
                 LocationRecord selfRec = mRosterLocations.get(resolveSelfUserName());
                 if (selfRec != null && selfRec.latitude != 0 && selfRec.longitude != 0) {
-                    Location loc = new Location("persisted");
-                    loc.setLatitude(selfRec.latitude);
-                    loc.setLongitude(selfRec.longitude);
-                    loc.setTime(selfRec.timestampMs);
-                    mLastAccurateLocation = loc;
+                    boolean isPeer = "Wi-Fi隊友座標".equals(selfRec.sourceTag) || "網路定位".equals(selfRec.sourceTag);
+                    if (!isPeer || Settings.getInstance(mContext).isPeerWifiLocationEnabled()) {
+                        Location loc = new Location("persisted");
+                        loc.setLatitude(selfRec.latitude);
+                        loc.setLongitude(selfRec.longitude);
+                        loc.setTime(selfRec.timestampMs);
+                        mLastAccurateLocation = loc;
+                    }
                 }
             }
         } catch (Exception ignored) {}

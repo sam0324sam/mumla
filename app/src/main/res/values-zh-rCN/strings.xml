@@ -210,4 +210,6 @@
 
     <string name="action_roster_locations">📍 队员位置看板</string>
     <string name="roster_locations_empty">目前暂无队员定位汇报记录。</string>
+    <string name="peer_wifi_location">Wi-Fi 队友坐标备援</string>
+    <string name="peer_wifi_location_sum">室内无 GPS 信号时，使用同 Wi-Fi 网域内队友的坐标作为备援（默认关闭以利纯 GPS 测试）。</string>
 </resources>

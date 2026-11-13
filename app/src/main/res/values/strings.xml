@@ -241,4 +241,6 @@
 
     <string name="action_roster_locations">Member Locations</string>
     <string name="roster_locations_empty">No location beacon records available yet.</string>
+    <string name="peer_wifi_location">Peer Wi-Fi Location Fallback</string>
+    <string name="peer_wifi_location_sum">Use nearby team members\' location on the same Wi-Fi when indoors with no GPS.</string>
 </resources>

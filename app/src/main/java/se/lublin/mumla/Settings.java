@@ -166,6 +166,9 @@ public class Settings {
     public static final String PREF_MANUAL_TIMEZONE = "manual_timezone";
     public static final String DEFAULT_MANUAL_TIMEZONE = "Asia/Taipei";
 
+    public static final String PREF_PEER_WIFI_LOCATION = "peer_wifi_location_fallback";
+    public static final boolean DEFAULT_PEER_WIFI_LOCATION = false;
+
     public static final String PREF_NEWS_SHOWN_VERSIONS = "newsShownVersions";
 
     static {
@@ -455,6 +458,14 @@ public class Settings {
 
     public void setManualTimezone(String timezone) {
         preferences.edit().putString(PREF_MANUAL_TIMEZONE, timezone).apply();
+    }
+
+    public boolean isPeerWifiLocationEnabled() {
+        return preferences.getBoolean(PREF_PEER_WIFI_LOCATION, DEFAULT_PEER_WIFI_LOCATION);
+    }
+
+    public void setPeerWifiLocationEnabled(boolean enabled) {
+        preferences.edit().putBoolean(PREF_PEER_WIFI_LOCATION, enabled).apply();
     }
 
 }

@@ -20,6 +20,13 @@
 <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
     <CheckBoxPreference
+        android:defaultValue="false"
+        android:key="peer_wifi_location_fallback"
+        android:summary="@string/peer_wifi_location_sum"
+        android:title="@string/peer_wifi_location"
+        app:iconSpaceReserved="false" />
+
+    <CheckBoxPreference
         android:defaultValue="true"
         android:key="chatNotify"
         android:summary="@string/chatNotificationsSum"
