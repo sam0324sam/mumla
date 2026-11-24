@@ -31,6 +31,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
@@ -71,6 +72,7 @@ public class GpsBeaconManager {
 
     public static final String HEADER_BEACON = "📍 [定位回報]";
     public static final String HEADER_ROSTER = "📋 【全員最近定位紀錄總表】";
+    public static final String HEADER_CLEAR_USER = "🗑️ [清除定位]";
 
     private static final String PREFS_NAME = "mumla_gps_beacon_prefs";
     private static final String KEY_PENDING_OUTGOING = "pending_outgoing_record";
@@ -79,6 +81,7 @@ public class GpsBeaconManager {
 
     private static final Pattern BATTERY_PATTERN = Pattern.compile("🔋\\s*(\\d+)%");
     private static final Pattern COORDS_PATTERN = Pattern.compile("maps\\.google\\.com/\\?q=([-+]?\\d+(?:\\.\\d+)?),([-+]?\\d+(?:\\.\\d+)?)");
+    private static final Pattern TIME_AND_SOURCE_PATTERN = Pattern.compile("🕒\\s*(\\d{2}/\\d{2}\\s+\\d{2}:\\d{2}:\\d{2})\\s*\\(([^()]+)\\)");
     private static final Pattern SOURCE_PATTERN = Pattern.compile("\\(([^()]+)\\)");
 
     private static volatile GpsBeaconManager sInstance;
@@ -259,14 +262,100 @@ public class GpsBeaconManager {
         mSynchronizedAtMs = System.currentTimeMillis();
         mMainHandler.postDelayed(() -> {
             if (!mStarted) return;
+            // Sync all currently online users' GPS comments immediately on join
+            syncAllOnlineUsersComments();
+
+            if (isCurrentUserAdmin()) {
+                Log.i(TAG, "Logged in as SuperUser: skipping own GPS beacon broadcast.");
+                return;
+            }
+
+            // Restore our own last-known GPS coordinate now that we know our real Mumble username
+            LocationRecord selfPersisted = restoreSelfLocationFromRoster();
+
             if (mPendingOutgoingRecord != null) {
                 Log.i(TAG, "Server synchronized: flushing queued latest record.");
                 flushPendingRecordIfConnected();
             } else {
+                // Immediately publish last known coordinate to server UserComment so teammates see it right away
+                if (selfPersisted != null) {
+                    publishRecordToServerCommentOnly(selfPersisted);
+                }
                 Log.i(TAG, "Server synchronized with empty queue: running initial fix.");
                 performLocationSample(false, null);
             }
         }, 800L);
+    }
+
+    private LocationRecord restoreSelfLocationFromRoster() {
+        String selfName = resolveSelfUserName();
+        LocationRecord selfRec = mRosterLocations.get(selfName);
+        if (selfRec != null && selfRec.latitude != 0 && selfRec.longitude != 0) {
+            boolean isPeer = "Wi-Fi隊友座標".equals(selfRec.sourceTag) || "網路定位".equals(selfRec.sourceTag);
+            if (!isPeer || Settings.getInstance(mContext).isPeerWifiLocationEnabled()) {
+                if (mLastAccurateLocation == null) {
+                    Location loc = new Location("persisted");
+                    loc.setLatitude(selfRec.latitude);
+                    loc.setLongitude(selfRec.longitude);
+                    loc.setTime(selfRec.timestampMs);
+                    mLastAccurateLocation = loc;
+                    Log.i(TAG, "Restored persisted last-known location for " + selfName + ": " + selfRec.latitude + "," + selfRec.longitude);
+                }
+                return selfRec;
+            }
+        }
+        return null;
+    }
+
+    private void publishRecordToServerCommentOnly(LocationRecord record) {
+        if (record == null || mService == null || !mService.isConnectionEstablished() || isCurrentUserAdmin()) {
+            return;
+        }
+        try {
+            int selfSession = mService.getSessionId();
+            String htmlMessage = formatSingleRecordHtml(record);
+            mService.setUserComment(selfSession, htmlMessage);
+            Log.i(TAG, "Published restored last-known GPS beacon for " + record.userName + " to User Comment on join.");
+        } catch (Exception e) {
+            Log.w(TAG, "Failed publishing restored last-known GPS beacon: " + e.getMessage());
+        }
+    }
+
+    private void syncAllOnlineUsersComments() {
+        if (mService == null || !mService.isConnectionEstablished()) {
+            return;
+        }
+        try {
+            IChannel root = mService.getRootChannel();
+            if (root != null) {
+                syncChannelUsersCommentsRecursive(root);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Failed syncing online user comments: " + e.getMessage());
+        }
+    }
+
+    private void syncChannelUsersCommentsRecursive(IChannel channel) {
+        if (channel == null) return;
+        List<? extends IUser> users = channel.getUsers();
+        if (users != null) {
+            for (IUser u : users) {
+                if (u == null) continue;
+                if (u.getComment() != null) {
+                    onUserCommentUpdated(u);
+                } else if (u.getCommentHash() != null) {
+                    try {
+                        mService.requestComment(u.getSession());
+                    } catch (Exception ignored) {}
+                }
+            }
+        }
+        List<? extends IChannel> subs = channel.getSubchannels();
+        if (subs != null) {
+            for (IChannel sub : subs) {
+                syncChannelUsersCommentsRecursive(sub);
+            }
+        }
     }
 
     /**
@@ -306,6 +395,15 @@ public class GpsBeaconManager {
         }
         String rawHtml = message.getMessage();
         String plain = Jsoup.parseBodyFragment(rawHtml).text().trim();
+
+        if (plain.startsWith(HEADER_CLEAR_USER)) {
+            String target = plain.substring(HEADER_CLEAR_USER.length()).trim();
+            if (!target.isEmpty()) {
+                removeRosterRecordLocal(target);
+                Log.i(TAG, "Purged roster location record via admin command: " + target);
+            }
+            return true;
+        }
 
         if (plain.contains(HEADER_ROSTER)) {
             mMainHandler.removeCallbacks(mRosterBroadcastRunnable);
@@ -600,6 +698,12 @@ public class GpsBeaconManager {
      * Leaves it in the slot (without duplicating) if currently disconnected.
      */
     public synchronized void flushPendingRecordIfConnected() {
+        if (isCurrentUserAdmin()) {
+            // SuperUser is an admin account; do not pollute the team location board with SuperUser's own location.
+            mPendingOutgoingRecord = null;
+            persistPendingRecord(null);
+            return;
+        }
         LocationRecord record = mPendingOutgoingRecord;
         if (record == null) {
             return;
@@ -652,6 +756,144 @@ public class GpsBeaconManager {
 
     public Map<String, LocationRecord> getRosterLocationsMap() {
         return mRosterLocations;
+    }
+
+    public boolean isUserOnline(String userName) {
+        if (userName == null) return false;
+        return collectOnlineUserNames().contains(userName);
+    }
+
+    /**
+     * Checks whether the current logged-in session is the server administrator (SuperUser).
+     */
+    public boolean isCurrentUserAdmin() {
+        if (mService == null || !mService.isConnectionEstablished()) {
+            return false;
+        }
+        try {
+            IUser self = mService.getSessionUser();
+            if (self != null) {
+                if (self.getUserId() == 0 || "SuperUser".equalsIgnoreCase(self.getName())) {
+                    return true;
+                }
+            }
+            se.lublin.humla.model.Server srv = mService.getTargetServer();
+            if (srv != null && "SuperUser".equalsIgnoreCase(srv.getUsername())) {
+                return true;
+            }
+        } catch (Exception ignored) {}
+        return false;
+    }
+
+    public void removeRosterRecordLocal(String targetUserName) {
+        if (targetUserName == null || targetUserName.isEmpty()) return;
+        mRosterLocations.remove(targetUserName);
+        persistRosterMap();
+    }
+
+    /**
+     * Admin-only action: deletes a member's location record locally, clears their server comment
+     * if online, and broadcasts a silent purge command to synchronize all connected devices.
+     */
+    public boolean removeRosterRecordAsAdmin(String targetUserName) {
+        if (!isCurrentUserAdmin() || targetUserName == null || targetUserName.isEmpty()) {
+            return false;
+        }
+        removeRosterRecordLocal(targetUserName);
+
+        if (mService != null && mService.isConnectionEstablished()) {
+            try {
+                IChannel root = mService.getRootChannel();
+                IUser targetUser = findOnlineUserRecursive(root, targetUserName);
+                if (targetUser != null) {
+                    mService.setUserComment(targetUser.getSession(), "");
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Failed clearing target user comment: " + e.getMessage());
+            }
+
+            try {
+                String cmd = HEADER_CLEAR_USER + " " + targetUserName;
+                IChannel currentChan = mService.getSessionChannel();
+                if (currentChan != null) {
+                    mService.sendChannelTextMessage(currentChan.getId(), cmd, false);
+                }
+                if (currentChan == null || currentChan.getId() != 0) {
+                    mService.sendChannelTextMessage(0, cmd, true);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Failed broadcasting admin location clear command: " + e.getMessage());
+            }
+        }
+        return true;
+    }
+
+    private IUser findOnlineUserRecursive(IChannel channel, String userName) {
+        if (channel == null || userName == null) return null;
+        List<? extends IUser> users = channel.getUsers();
+        if (users != null) {
+            for (IUser u : users) {
+                if (u != null && userName.equals(u.getName())) {
+                    return u;
+                }
+            }
+        }
+        List<? extends IChannel> subs = channel.getSubchannels();
+        if (subs != null) {
+            for (IChannel sub : subs) {
+                IUser found = findOnlineUserRecursive(sub, userName);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    public List<LocationRecord> getSortedRosterRecords() {
+        final Set<String> onlineNames = collectOnlineUserNames();
+        List<LocationRecord> sorted = new ArrayList<>(mRosterLocations.values());
+        Collections.sort(sorted, new Comparator<LocationRecord>() {
+            @Override
+            public int compare(LocationRecord a, LocationRecord b) {
+                boolean onlineA = a.userName != null && onlineNames.contains(a.userName);
+                boolean onlineB = b.userName != null && onlineNames.contains(b.userName);
+                if (onlineA != onlineB) {
+                    return onlineA ? -1 : 1;
+                }
+                return Long.compare(b.timestampMs, a.timestampMs);
+            }
+        });
+        return sorted;
+    }
+
+    public static String formatRelativeTimeShort(long timestampMs) {
+        long diffMs = Math.max(0L, System.currentTimeMillis() - timestampMs);
+        String hm = new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date(timestampMs));
+        if (diffMs < 60_000L) {
+            return "剛剛 (" + hm + ")";
+        } else if (diffMs < 3600_000L) {
+            return (diffMs / 60_000L) + " 分鐘前 (" + hm + ")";
+        } else if (diffMs < 86400_000L) {
+            return (diffMs / 3600_000L) + " 小時前 (" + hm + ")";
+        } else {
+            String mdHm = new SimpleDateFormat("MM/dd HH:mm", Locale.getDefault()).format(new Date(timestampMs));
+            return (diffMs / 86400_000L) + " 天前 (" + mdHm + ")";
+        }
+    }
+
+    public static String formatFullTimeWithRelative(long timestampMs) {
+        long diffMs = Math.max(0L, System.currentTimeMillis() - timestampMs);
+        String full = new SimpleDateFormat("MM/dd HH:mm:ss", Locale.getDefault()).format(new Date(timestampMs));
+        String rel;
+        if (diffMs < 60_000L) {
+            rel = "剛剛";
+        } else if (diffMs < 3600_000L) {
+            rel = (diffMs / 60_000L) + " 分鐘前";
+        } else if (diffMs < 86400_000L) {
+            rel = (diffMs / 3600_000L) + " 小時前";
+        } else {
+            rel = (diffMs / 86400_000L) + " 天前";
+        }
+        return rel + " (" + full + ")";
     }
 
     private void postRosterSummaryNow() {
@@ -766,9 +1008,16 @@ public class GpsBeaconManager {
             }
 
             String source = "定位";
-            Matcher srcMatcher = SOURCE_PATTERN.matcher(plain);
-            if (srcMatcher.find()) {
-                source = srcMatcher.group(1);
+            long parsedTimestampMs = System.currentTimeMillis();
+            Matcher timeAndSrcMatcher = TIME_AND_SOURCE_PATTERN.matcher(plain);
+            if (timeAndSrcMatcher.find()) {
+                parsedTimestampMs = parseBeaconTimestampMs(timeAndSrcMatcher.group(1));
+                source = timeAndSrcMatcher.group(2);
+            } else {
+                Matcher srcMatcher = SOURCE_PATTERN.matcher(plain);
+                if (srcMatcher.find()) {
+                    source = srcMatcher.group(1);
+                }
             }
 
             String name = actorName;
@@ -785,10 +1034,35 @@ public class GpsBeaconManager {
             }
 
             return new LocationRecord(name, battery, plain.contains("⚡"),
-                    System.currentTimeMillis(), lat, lon, source);
+                    parsedTimestampMs, lat, lon, source);
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private long parseBeaconTimestampMs(String mmddHhmmss) {
+        long now = System.currentTimeMillis();
+        if (mmddHhmmss == null || mmddHhmmss.trim().isEmpty()) {
+            return now;
+        }
+        try {
+            Calendar nowCal = Calendar.getInstance();
+            int year = nowCal.get(Calendar.YEAR);
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss", Locale.US);
+            Date parsed = sdf.parse(year + "/" + mmddHhmmss.trim());
+            if (parsed != null) {
+                long ts = parsed.getTime();
+                // Handle year rollover (e.g., Dec 31 timestamp parsed on Jan 1)
+                if (ts - now > 24 * 3600 * 1000L) {
+                    Calendar prevCal = Calendar.getInstance();
+                    prevCal.setTimeInMillis(ts);
+                    prevCal.add(Calendar.YEAR, -1);
+                    ts = prevCal.getTimeInMillis();
+                }
+                return ts;
+            }
+        } catch (Exception ignored) {}
+        return now;
     }
 
     private void parseRosterSummaryIntoCache(String rawHtml) {

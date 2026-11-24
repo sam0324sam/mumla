@@ -109,6 +109,7 @@ import se.lublin.mumla.service.MumlaService;
 import se.lublin.mumla.util.HumlaServiceFragment;
 import se.lublin.mumla.util.HumlaServiceProvider;
 import se.lublin.mumla.util.MumlaTrustStore;
+import se.lublin.mumla.util.ServerConfigFileManager;
 
 public class MumlaActivity extends AppCompatActivity implements ListView.OnItemClickListener,
         FavouriteServerListFragment.ServerConnectHandler, HumlaServiceProvider, DatabaseProvider,
@@ -183,7 +184,7 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
         if (!mSettings.isAutoConnectOnStartEnabled()) {
             return;
         }
-        if (mService != null && mService.getConnectionState() != HumlaService.ConnectionState.DISCONNECTED) {
+        if (mService == null || mService.getConnectionState() != HumlaService.ConnectionState.DISCONNECTED) {
             return;
         }
         mAutoConnectAttempted = true;
@@ -344,6 +345,7 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
 
         mDatabase = new MumlaSQLiteDatabase(this); // TODO add support for cloud storage
         mDatabase.open();
+        ServerConfigFileManager.syncFromConfigFile(this, mDatabase, mSettings);
 
         mDrawerLayout = findViewById(R.id.drawer_layout);
         ListView mDrawerList = findViewById(R.id.left_drawer);
@@ -453,6 +455,12 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
     @Override
     protected void onResume() {
         super.onResume();
+        if (mDatabase != null && ServerConfigFileManager.syncFromConfigFile(this, mDatabase, mSettings)) {
+            mAutoConnectAttempted = false;
+            if (mService != null && mService.isConnected()) {
+                mService.disconnect();
+            }
+        }
         Intent connectIntent = new Intent(this, MumlaService.class);
         bindService(connectIntent, mConnection, BIND_AUTO_CREATE);
 

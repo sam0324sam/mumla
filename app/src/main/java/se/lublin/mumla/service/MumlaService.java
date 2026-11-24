@@ -231,7 +231,12 @@ public class MumlaService extends HumlaService implements
                 // Request avatar data if available.
                 requestAvatar(user.getSession());
             }
+            if (user.getCommentHash() != null && user.getComment() == null) {
+                // Automatically fetch user comment (>128 bytes) to sync GPS beacons.
+                requestComment(user.getSession());
+            }
             GpsBeaconManager.getInstance(MumlaService.this).onUserJoinedServer(user);
+            GpsBeaconManager.getInstance(MumlaService.this).onUserCommentUpdated(user);
         }
 
         @Override
@@ -270,6 +275,10 @@ public class MumlaService extends HumlaService implements
                 // Update avatar data if available.
                 requestAvatar(user.getSession());
             }
+            if (user.getCommentHash() != null && user.getComment() == null) {
+                // Automatically fetch updated comment (>128 bytes) to sync GPS beacons.
+                requestComment(user.getSession());
+            }
 
             GpsBeaconManager.getInstance(MumlaService.this).onUserCommentUpdated(user);
         }
@@ -277,6 +286,11 @@ public class MumlaService extends HumlaService implements
         @Override
         public void onMessageLogged(IMessage message) {
             boolean isGpsMessage = GpsBeaconManager.getInstance(MumlaService.this).onIncomingChatMessage(message);
+            if (isGpsMessage && message != null && message.getMessage() != null
+                    && message.getMessage().contains(GpsBeaconManager.HEADER_CLEAR_USER)) {
+                // Silent admin purge control command: do not show chat notification or clutter chat log.
+                return;
+            }
 
             // Split on / strip all HTML tags.
             Document parsedMessage = Jsoup.parseBodyFragment(message.getMessage());
