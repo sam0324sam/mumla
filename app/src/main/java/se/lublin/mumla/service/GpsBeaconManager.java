@@ -66,8 +66,13 @@ import se.lublin.mumla.Settings;
 public class GpsBeaconManager {
     private static final String TAG = "GpsBeaconManager";
 
-    public static final long BEACON_INTERVAL_MS = 5 * 60 * 1000L; // 5 minutes
+    public static final long BEACON_INTERVAL_MS = 5 * 60 * 1000L; // 5 minutes (moving / normal)
+    public static final long STATIONARY_OUTDOOR_INTERVAL_MS = 10 * 60 * 1000L; // 10 minutes when stationary on 4G
+    public static final long LOW_BATTERY_INTERVAL_MS = 15 * 60 * 1000L; // 15 minutes when battery <= 20%
+    public static final long CRITICAL_BATTERY_INTERVAL_MS = 30 * 60 * 1000L; // 30 minutes when battery <= 10%
     public static final long MAX_COLD_BACKOFF_INTERVAL_MS = 15 * 60 * 1000L; // 15 min max indoor backoff
+    public static final long XTRA_INJECTION_INTERVAL_MS = 6 * 3600 * 1000L; // Throttle XTRA/time injection to once per 6h
+    private static final float STATIONARY_DISTANCE_METERS = 30.0f;
     public static final long INITIAL_DELAY_MS = 15 * 1000L;      // 15 seconds after start
     public static final long GPS_FIX_TIMEOUT_MS = 45 * 1000L;    // 45 seconds warm fix timeout
     public static final long GPS_COLD_FIX_TIMEOUT_MS = 90 * 1000L; // 90 seconds cold fix cap to save battery indoors
@@ -107,6 +112,8 @@ public class GpsBeaconManager {
     private Location mLastAccurateLocation;
     private String mLastFixBssid;
     private int mConsecutiveColdFailures = 0;
+    private boolean mOutdoorStationary = false;
+    private long mLastXtraInjectionMs = 0L;
 
     private volatile int mLatestBatteryPercent = 100;
     private volatile boolean mLatestIsCharging = false;
@@ -172,17 +179,33 @@ public class GpsBeaconManager {
         }
     }
 
+    private long computeNextBeaconIntervalMs() {
+        // Low-battery survival mode: prioritize voice PTT battery over GPS polling
+        if (!mLatestIsCharging) {
+            if (mLatestBatteryPercent <= 10) {
+                return CRITICAL_BATTERY_INTERVAL_MS;
+            }
+            if (mLatestBatteryPercent <= 20) {
+                return LOW_BATTERY_INTERVAL_MS;
+            }
+        }
+        if (mLastAccurateLocation == null && mConsecutiveColdFailures > 0) {
+            return Math.min(BEACON_INTERVAL_MS * (mConsecutiveColdFailures + 1), MAX_COLD_BACKOFF_INTERVAL_MS);
+        }
+        if (mOutdoorStationary) {
+            return STATIONARY_OUTDOOR_INTERVAL_MS;
+        }
+        return BEACON_INTERVAL_MS;
+    }
+
     private final Runnable mPeriodicBeaconRunnable = new Runnable() {
         @Override
         public void run() {
             if (!mStarted) return;
-            Log.i(TAG, "Periodic beacon tick triggered (coldFailures=" + mConsecutiveColdFailures + ").");
+            Log.i(TAG, "Periodic beacon tick triggered (coldFailures=" + mConsecutiveColdFailures
+                    + ", stationary=" + mOutdoorStationary + ", bat=" + mLatestBatteryPercent + "%).");
             performLocationSample(false, null);
-            long nextInterval = BEACON_INTERVAL_MS;
-            if (mLastAccurateLocation == null && mConsecutiveColdFailures > 0) {
-                nextInterval = Math.min(BEACON_INTERVAL_MS * (mConsecutiveColdFailures + 1), MAX_COLD_BACKOFF_INTERVAL_MS);
-            }
-            mMainHandler.postDelayed(this, nextInterval);
+            mMainHandler.postDelayed(this, computeNextBeaconIntervalMs());
         }
     };
 
@@ -535,6 +558,12 @@ public class GpsBeaconManager {
                     Log.i(TAG, "Received hardware GPS fix: " + location.getLatitude() + "," + location.getLongitude());
                     cancelActiveFixListener();
                     mConsecutiveColdFailures = 0;
+                    if (mLastAccurateLocation != null) {
+                        float movedMeters = mLastAccurateLocation.distanceTo(location);
+                        mOutdoorStationary = (movedMeters < STATIONARY_DISTANCE_METERS);
+                    } else {
+                        mOutdoorStationary = false;
+                    }
                     mLastAccurateLocation = location;
                     mLastFixBssid = getConnectedWifiBssid();
                     String tag = customReasonTag != null ? customReasonTag : "GPS衛星";
@@ -559,11 +588,15 @@ public class GpsBeaconManager {
 
         try {
             if (gpsEnabled) {
-                // Assist Qualcomm GPS with network time and XTRA injection over Wi-Fi
-                try {
-                    lm.sendExtraCommand(LocationManager.GPS_PROVIDER, "force_time_injection", null);
-                    lm.sendExtraCommand(LocationManager.GPS_PROVIDER, "force_xtra_injection", null);
-                } catch (Exception ignored) {}
+                // Throttle XTRA/time injection to at most once every 6 hours (ephemeris is valid 24h+)
+                long nowMs = System.currentTimeMillis();
+                if (nowMs - mLastXtraInjectionMs >= XTRA_INJECTION_INTERVAL_MS) {
+                    mLastXtraInjectionMs = nowMs;
+                    try {
+                        lm.sendExtraCommand(LocationManager.GPS_PROVIDER, "force_time_injection", null);
+                        lm.sendExtraCommand(LocationManager.GPS_PROVIDER, "force_xtra_injection", null);
+                    } catch (Exception ignored) {}
+                }
                 lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 3000L, 0f, listener, Looper.getMainLooper());
             }
             if (netEnabled) {

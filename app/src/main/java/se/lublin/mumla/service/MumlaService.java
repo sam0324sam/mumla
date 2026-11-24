@@ -141,11 +141,18 @@ public class MumlaService extends HumlaService implements
     private boolean mSuppressNotifications;
 
     private TextToSpeech mTTS;
+    private String mPendingTtsSpeech;
     private TextToSpeech.OnInitListener mTTSInitListener = new TextToSpeech.OnInitListener() {
         @Override
         public void onInit(int status) {
-            if(status == TextToSpeech.ERROR)
+            if (status == TextToSpeech.ERROR) {
                 logWarning(getString(R.string.tts_failed));
+                mPendingTtsSpeech = null;
+            } else if (status == TextToSpeech.SUCCESS && mPendingTtsSpeech != null && mTTS != null) {
+                String pending = mPendingTtsSpeech;
+                mPendingTtsSpeech = null;
+                mTTS.speak(pending, TextToSpeech.QUEUE_ADD, null);
+            }
         }
     };
 
@@ -381,14 +388,19 @@ public class MumlaService extends HumlaService implements
             String formattedTtsMessage = getString(R.string.notification_message,
                     message.getActorName(), ttsMessage);
 
-            // Read if TTS is enabled, the message is less than threshold, is a text message, not deafened, and not a GPS beacon
+            // Read if TTS is enabled, the message is less than threshold, is a text message, not deafened, and not a GPS beacon.
+            // Lazily initializes TextToSpeech on first real chat message to avoid binding TTS engine on walkie-talkie boot.
             if(!isGpsMessage &&
                     mSettings.isTextToSpeechEnabled() &&
-                    mTTS != null &&
                     formattedTtsMessage.length() <= TTS_THRESHOLD &&
                     getSessionUser() != null &&
                     !getSessionUser().isSelfDeafened()) {
-                mTTS.speak(formattedTtsMessage, TextToSpeech.QUEUE_ADD, null);
+                if (mTTS == null) {
+                    mPendingTtsSpeech = formattedTtsMessage;
+                    mTTS = new TextToSpeech(MumlaService.this, mTTSInitListener);
+                } else {
+                    mTTS.speak(formattedTtsMessage, TextToSpeech.QUEUE_ADD, null);
+                }
             }
 
             // TODO: create a customizable notification sieve
@@ -490,9 +502,8 @@ public class MumlaService extends HumlaService implements
         mChannelOverlay = null;
         mHotCorner = null;
 
-        // Set up TTS
-        if(mSettings.isTextToSpeechEnabled())
-            mTTS = new TextToSpeech(this, mTTSInitListener);
+        // TTS is lazily initialized only when an actual non-GPS chat message needs to be spoken
+        mTTS = null;
 
         // Initialize zero-latency PTT sound synthesizer & cached ALSA playback paths
         mPttSoundManager = new PttSoundManager();
