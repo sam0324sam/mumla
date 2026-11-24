@@ -101,6 +101,7 @@ public class GpsBeaconManager {
 
     // Size-1 overwrite queue for offline resilience
     private volatile LocationRecord mPendingOutgoingRecord;
+    private volatile boolean mHasPersistedPending = false;
 
     // Persisted roster of last-known locations keyed by username
     private final Map<String, LocationRecord> mRosterLocations = new ConcurrentHashMap<>();
@@ -113,6 +114,7 @@ public class GpsBeaconManager {
     private String mLastFixBssid;
     private int mConsecutiveColdFailures = 0;
     private boolean mOutdoorStationary = false;
+    private boolean mWifiStationary = false;
     private long mLastXtraInjectionMs = 0L;
 
     private volatile int mLatestBatteryPercent = 100;
@@ -192,7 +194,7 @@ public class GpsBeaconManager {
         if (mLastAccurateLocation == null && mConsecutiveColdFailures > 0) {
             return Math.min(BEACON_INTERVAL_MS * (mConsecutiveColdFailures + 1), MAX_COLD_BACKOFF_INTERVAL_MS);
         }
-        if (mOutdoorStationary) {
+        if (mOutdoorStationary || mWifiStationary) {
             return STATIONARY_OUTDOOR_INTERVAL_MS;
         }
         return BEACON_INTERVAL_MS;
@@ -203,7 +205,7 @@ public class GpsBeaconManager {
         public void run() {
             if (!mStarted) return;
             Log.i(TAG, "Periodic beacon tick triggered (coldFailures=" + mConsecutiveColdFailures
-                    + ", stationary=" + mOutdoorStationary + ", bat=" + mLatestBatteryPercent + "%).");
+                    + ", stationary=" + (mOutdoorStationary || mWifiStationary) + ", bat=" + mLatestBatteryPercent + "%).");
             performLocationSample(false, null);
             mMainHandler.postDelayed(this, computeNextBeaconIntervalMs());
         }
@@ -492,8 +494,9 @@ public class GpsBeaconManager {
                 && mLastAccurateLocation != null
                 && currentBssid != null
                 && currentBssid.equals(mLastFixBssid)) {
+            mWifiStationary = true;
             String tag = customReasonTag != null ? customReasonTag : "定點快取";
-            Log.i(TAG, "Stationary Wi-Fi BSSID match (" + currentBssid + "), skipping hardware GPS.");
+            Log.i(TAG, "Stationary Wi-Fi BSSID match (" + currentBssid + "), skipping hardware GPS (backing off to 10m).");
             onLocationResolved(
                     mLastAccurateLocation.getLatitude(),
                     mLastAccurateLocation.getLongitude(),
@@ -503,6 +506,7 @@ public class GpsBeaconManager {
             return;
         }
 
+        mWifiStationary = false;
         if (!hasLocationPermission()) {
             Log.w(TAG, "Location permission missing, skipping location sample.");
             return;
@@ -734,11 +738,12 @@ public class GpsBeaconManager {
                 sourceTag
         );
 
-        // Size-1 overwrite queue: always overwrite previous unsent record
+        // Size-1 overwrite queue: flush immediately if online, persist pending slot only when offline
         mPendingOutgoingRecord = record;
-        persistPendingRecord(record);
-
         flushPendingRecordIfConnected();
+        if (mPendingOutgoingRecord != null) {
+            persistPendingRecord(mPendingOutgoingRecord);
+        }
     }
 
     /**
@@ -1156,6 +1161,7 @@ public class GpsBeaconManager {
             String pendingStr = mPrefs.getString(KEY_PENDING_OUTGOING, null);
             if (pendingStr != null) {
                 mPendingOutgoingRecord = LocationRecord.fromJson(new JSONObject(pendingStr));
+                mHasPersistedPending = (mPendingOutgoingRecord != null);
             }
         } catch (Exception ignored) {}
 
@@ -1187,6 +1193,10 @@ public class GpsBeaconManager {
     }
 
     private void persistPendingRecord(final LocationRecord record) {
+        if (record == null && !mHasPersistedPending) {
+            return;
+        }
+        mHasPersistedPending = (record != null);
         final String json = (record != null) ? record.toJson().toString() : null;
         mExecutor.execute(() -> {
             if (json == null) {

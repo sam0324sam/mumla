@@ -53,6 +53,11 @@ public class MumlaConnectionNotification {
     private OnActionListener mListener;
     private String mCustomContentText;
     private boolean mActionsShown;
+    private boolean mShowing;
+    private boolean mReceiverRegistered;
+    private boolean mChannelCreated;
+    private String mLastRenderedContentText;
+    private boolean mLastRenderedActionsShown;
 
     private BroadcastReceiver mNotificationReceiver = new BroadcastReceiver() {
         @Override
@@ -95,24 +100,38 @@ public class MumlaConnectionNotification {
     }
 
     /**
-     * Shows the notification and registers the notification action button receiver.
+     * Shows or updates the notification and registers the notification action button receiver.
+     * Skips redundant startForeground() IPC when content and actions have not changed.
      */
     public void show() {
-        createNotification();
+        boolean contentUnchanged = (mCustomContentText == null)
+                ? (mLastRenderedContentText == null)
+                : mCustomContentText.equals(mLastRenderedContentText);
+        if (mShowing && contentUnchanged && mActionsShown == mLastRenderedActionsShown) {
+            return;
+        }
 
-        IntentFilter filter = new IntentFilter();
-        filter.addAction(BROADCAST_DEAFEN);
-        filter.addAction(BROADCAST_MUTE);
-        filter.addAction(BROADCAST_OVERLAY);
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                mService.registerReceiver(mNotificationReceiver, filter, RECEIVER_NOT_EXPORTED);
-            } else {
-                mService.registerReceiver(mNotificationReceiver, filter);
+        createNotification();
+        mShowing = true;
+        mLastRenderedContentText = mCustomContentText;
+        mLastRenderedActionsShown = mActionsShown;
+
+        if (!mReceiverRegistered) {
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(BROADCAST_DEAFEN);
+            filter.addAction(BROADCAST_MUTE);
+            filter.addAction(BROADCAST_OVERLAY);
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    mService.registerReceiver(mNotificationReceiver, filter, RECEIVER_NOT_EXPORTED);
+                } else {
+                    mService.registerReceiver(mNotificationReceiver, filter);
+                }
+                mReceiverRegistered = true;
+            } catch (IllegalArgumentException e) {
+                // Thrown if receiver is already registered.
+                mReceiverRegistered = true;
             }
-        } catch (IllegalArgumentException e) {
-            // Thrown if receiver is already registered.
-            e.printStackTrace();
         }
     }
 
@@ -120,12 +139,16 @@ public class MumlaConnectionNotification {
      * Hides the notification and unregisters the action receiver.
      */
     public void hide() {
-        try {
-            mService.unregisterReceiver(mNotificationReceiver);
-        } catch (IllegalArgumentException e) {
-            // Thrown if receiver is not registered.
-            e.printStackTrace();
+        if (mReceiverRegistered) {
+            try {
+                mService.unregisterReceiver(mNotificationReceiver);
+            } catch (IllegalArgumentException ignored) {
+                // Thrown if receiver is not registered.
+            }
+            mReceiverRegistered = false;
         }
+        mShowing = false;
+        mLastRenderedContentText = null;
         mService.stopForeground(true);
     }
 
@@ -136,11 +159,18 @@ public class MumlaConnectionNotification {
         String channelId = "";
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             channelId = "connected_channel";
-            String channelName = mService.getString(R.string.connected);
-            NotificationChannel chan = new NotificationChannel(channelId, channelName,
-                    NotificationManager.IMPORTANCE_DEFAULT);
-            NotificationManager manager = mService.getSystemService(NotificationManager.class);
-            manager.createNotificationChannel(chan);
+            if (!mChannelCreated) {
+                String channelName = mService.getString(R.string.connected);
+                NotificationChannel chan = new NotificationChannel(channelId, channelName,
+                        NotificationManager.IMPORTANCE_LOW);
+                chan.setSound(null, null);
+                chan.enableVibration(false);
+                NotificationManager manager = mService.getSystemService(NotificationManager.class);
+                if (manager != null) {
+                    manager.createNotificationChannel(chan);
+                }
+                mChannelCreated = true;
+            }
         }
         NotificationCompat.Builder builder =
                 new NotificationCompat.Builder(mService, channelId);
@@ -151,10 +181,13 @@ public class MumlaConnectionNotification {
         }
         builder.setContentText(mCustomContentText);
         builder.setSmallIcon(R.drawable.ic_stat_notify);
-        builder.setPriority(NotificationCompat.PRIORITY_DEFAULT);
+        builder.setPriority(NotificationCompat.PRIORITY_LOW);
         builder.setCategory(NotificationCompat.CATEGORY_CALL);
         builder.setShowWhen(false);
         builder.setOngoing(true);
+        builder.setOnlyAlertOnce(true);
+        builder.setSound(null);
+        builder.setVibrate(null);
 
         if (mActionsShown) {
             // Add notification triggers

@@ -318,8 +318,11 @@ public class MumlaService extends HumlaService implements
                 if (user.getChannel() != null && user.getChannel().getId() > 0) {
                     saveLastChannel(user.getChannel().getId());
                 }
-                mSettings.setMutedAndDeafened(user.isSelfMuted(), user.isSelfDeafened()); // Update settings mute/deafen state
-                if(mNotification != null) {
+                boolean effectiveMuted = user.isSelfMuted() || user.isSelfDeafened();
+                if (effectiveMuted != mSettings.isMuted() || user.isSelfDeafened() != mSettings.isDeafened()) {
+                    mSettings.setMutedAndDeafened(user.isSelfMuted(), user.isSelfDeafened());
+                }
+                if (mNotification != null) {
                     String contentText;
                     if (user.isSelfMuted() && user.isSelfDeafened())
                         contentText = getString(R.string.status_notify_muted_and_deafened);
@@ -330,11 +333,13 @@ public class MumlaService extends HumlaService implements
                     mNotification.setCustomContentText(contentText);
                     mNotification.show();
                 }
+                // Skip requesting/re-parsing our own comment blob (GpsBeaconManager already persisted it locally)
+                return;
             }
 
             // Skip automatic avatar blob fetching to save RAM/bandwidth on walkie-talkie
             if (user.getCommentHash() != null && user.getComment() == null) {
-                // Automatically fetch updated comment (>128 bytes) to sync GPS beacons.
+                // Automatically fetch other users' updated comment (>128 bytes) to sync GPS beacons.
                 requestComment(user.getSession());
             }
 
