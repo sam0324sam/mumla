@@ -63,7 +63,7 @@ jobs:
         run: |
           chmod +x ./gradlew
           TASK="${{ github.event.inputs.gradle_task || ':app:assembleFossDebug' }}"
-          ./gradlew $TASK --stacktrace
+          ./gradlew $TASK -Dorg.gradle.java.home="$JAVA_HOME" --stacktrace
 
       - name: Collect APK artifacts
         run: |
