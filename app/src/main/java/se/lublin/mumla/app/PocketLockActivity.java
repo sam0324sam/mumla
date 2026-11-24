@@ -54,7 +54,7 @@ public class PocketLockActivity extends Activity {
         @Override
         public void run() {
             if (!isFinishing() && !mIsUnlocking) {
-                acquireWakeFocus();
+                acquireWakeFocus(2000L);
             }
         }
     };
@@ -107,14 +107,13 @@ public class PocketLockActivity extends Activity {
         // 綁定音量控制串流，防止音量鍵彈出系統面板或發出系統音效
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
 
-        // 全螢幕沉浸式純黑，維持視窗焦點 (移除 FLAG_DISMISS_KEYGUARD 避免 1050ms Keyguard drawn timeout 無焦點掉鍵)
+        // 全螢幕沉浸式純黑，不再常駐 FLAG_KEEP_SCREEN_ON 以允許系統依預設時間真正滅屏休眠省電
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         Window win = getWindow();
         win.addFlags(
                 WindowManager.LayoutParams.FLAG_FULLSCREEN |
                 WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED |
-                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON |
-                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
         );
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true);
@@ -138,16 +137,15 @@ public class PocketLockActivity extends Activity {
         setContentView(blackView);
         blackView.requestFocus();
 
-        // 立即並延遲補發喚醒鎖，反制 ROM 在 F4 長按 1 秒時觸發的 Going to sleep，確保 100% 取得 Window Focus
-        acquireWakeFocus();
-        mHandler.postDelayed(mEnsureWakeFocusRunnable, 180);
-        mHandler.postDelayed(mEnsureWakeFocusRunnable, 420);
+        // 短暫持喚醒鎖 (2 秒) 反制 ROM 在 F4 長按時觸發的 Going to sleep，之後自動釋放讓螢幕自然滅屏進入省電休眠
+        acquireWakeFocus(2000L);
+        mHandler.postDelayed(mEnsureWakeFocusRunnable, 220);
 
-        Log.i(TAG, "PocketLockActivity active (Display Blackout & Front Keys Blocked)");
+        Log.i(TAG, "PocketLockActivity active (Display Blackout, Sleep Power-Save Enabled & Front Keys Blocked)");
     }
 
     @SuppressWarnings("deprecation")
-    private void acquireWakeFocus() {
+    private void acquireWakeFocus(long timeoutMs) {
         try {
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
             if (pm != null) {
@@ -158,9 +156,7 @@ public class PocketLockActivity extends Activity {
                     );
                     mFocusWakeLock.setReferenceCounted(false);
                 }
-                if (!mFocusWakeLock.isHeld()) {
-                    mFocusWakeLock.acquire();
-                }
+                mFocusWakeLock.acquire(timeoutMs);
             }
         } catch (Exception ignored) {}
     }
@@ -179,10 +175,12 @@ public class PocketLockActivity extends Activity {
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        // 若系統關機選單或休眠嘗試搶奪焦點，立即強制關閉對話框並拉回焦點！
+        // 僅在螢幕亮起狀態下防禦系統對話框搶奪焦點，不再阻擋自然休眠滅屏
         if (!hasFocus && isLocked() && !mIsUnlocking) {
-            closeSystemDialogsThrottled();
-            mHandler.postDelayed(mEnsureWakeFocusRunnable, 80);
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null && pm.isInteractive()) {
+                closeSystemDialogsThrottled();
+            }
         }
     }
 
@@ -291,6 +289,9 @@ public class PocketLockActivity extends Activity {
             mUnlockClicks = 1; // 間隔超過 1.2 秒重新計數
         }
         mLastClickTime = now;
+
+        // 解鎖按鍵連按期間短暫喚醒視窗搶回焦點，確保吃掉 ROM 注入的合成音量下鍵 (25) 不外洩
+        acquireWakeFocus(3500L);
 
         Log.d(TAG, "Volume-Down Click in lock mode: " + mUnlockClicks + "/5");
 

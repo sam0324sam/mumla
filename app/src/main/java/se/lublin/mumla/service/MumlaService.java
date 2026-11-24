@@ -96,6 +96,29 @@ public class MumlaService extends HumlaService implements
     public static final int PROXIMITY_SCREEN_OFF_WAKE_LOCK = 32;
     public static final int TTS_THRESHOLD = 250; // Maximum number of characters to read
     public static final int RECONNECT_DELAY = 10000;
+    private static final int MAX_MESSAGE_LOG_SIZE = 200; // Prevent unbounded RAM growth during multi-week uptime
+
+    private void appendMessageLog(IChatMessage msg) {
+        if (mMessageLog == null) return;
+        if (mMessageLog.size() >= MAX_MESSAGE_LOG_SIZE) {
+            mMessageLog.remove(0);
+        }
+        mMessageLog.add(msg);
+    }
+
+    private MumlaOverlay getOrCreateOverlay() {
+        if (mChannelOverlay == null) {
+            mChannelOverlay = new MumlaOverlay(this);
+        }
+        return mChannelOverlay;
+    }
+
+    private MumlaHotCorner getOrCreateHotCorner() {
+        if (mHotCorner == null) {
+            mHotCorner = new MumlaHotCorner(this, mSettings.getHotCornerGravity(), mHotCornerListener);
+        }
+        return mHotCorner;
+    }
 
     private Settings mSettings;
     private MumlaConnectionNotification mNotification;
@@ -373,22 +396,22 @@ public class MumlaService extends HumlaService implements
                 mMessageNotification.show(message);
             }
 
-            mMessageLog.add(new IChatMessage.TextMessage(message));
+            appendMessageLog(new IChatMessage.TextMessage(message));
         }
 
         @Override
         public void onLogInfo(String message) {
-            mMessageLog.add(new IChatMessage.InfoMessage(IChatMessage.InfoMessage.Type.INFO, message));
+            appendMessageLog(new IChatMessage.InfoMessage(IChatMessage.InfoMessage.Type.INFO, message));
         }
 
         @Override
         public void onLogWarning(String message) {
-            mMessageLog.add(new IChatMessage.InfoMessage(IChatMessage.InfoMessage.Type.WARNING, message));
+            appendMessageLog(new IChatMessage.InfoMessage(IChatMessage.InfoMessage.Type.WARNING, message));
         }
 
         @Override
         public void onLogError(String message) {
-            mMessageLog.add(new IChatMessage.InfoMessage(IChatMessage.InfoMessage.Type.ERROR, message));
+            appendMessageLog(new IChatMessage.InfoMessage(IChatMessage.InfoMessage.Type.ERROR, message));
         }
 
         @Override
@@ -463,9 +486,9 @@ public class MumlaService extends HumlaService implements
         mMessageLog = new ArrayList<>();
         mMessageNotification = new MumlaMessageNotification(MumlaService.this);
 
-        // Instantiate overlay view
-        mChannelOverlay = new MumlaOverlay(this);
-        mHotCorner = new MumlaHotCorner(this, mSettings.getHotCornerGravity(), mHotCornerListener);
+        // Lazy-initialize overlay & hot corner only when actually enabled/shown to save RAM on walkie-talkies
+        mChannelOverlay = null;
+        mHotCorner = null;
 
         // Set up TTS
         if(mSettings.isTextToSpeechEnabled())
@@ -608,7 +631,7 @@ public class MumlaService extends HumlaService implements
         }
 
         if (mSettings.isHotCornerEnabled()) {
-            mHotCorner.setShown(true);
+            getOrCreateHotCorner().setShown(true);
         }
         // Configure proximity sensor
         if (mSettings.isHandsetMode()) {
@@ -623,9 +646,13 @@ public class MumlaService extends HumlaService implements
         super.onConnectionDisconnected(e);
 
         // Remove overlay if present.
-        mChannelOverlay.hide();
+        if (mChannelOverlay != null) {
+            mChannelOverlay.hide();
+        }
 
-        mHotCorner.setShown(false);
+        if (mHotCorner != null) {
+            mHotCorner.setShown(false);
+        }
 
         setProximitySensorOn(false);
 
@@ -646,7 +673,9 @@ public class MumlaService extends HumlaService implements
                 /* Convert input method defined in settings to an integer format used by Humla. */
                 int inputMethod = mSettings.getHumlaInputMethod();
                 changedExtras.putInt(HumlaService.EXTRAS_TRANSMIT_MODE, inputMethod);
-                mChannelOverlay.setPushToTalkShown(inputMethod == Constants.TRANSMIT_PUSH_TO_TALK);
+                if (mChannelOverlay != null) {
+                    mChannelOverlay.setPushToTalkShown(inputMethod == Constants.TRANSMIT_PUSH_TO_TALK);
+                }
                 break;
             case Settings.PREF_HANDSET_MODE:
                 setProximitySensorOn(isConnectionEstablished() && mSettings.isHandsetMode());
@@ -658,8 +687,13 @@ public class MumlaService extends HumlaService implements
                         mSettings.getDetectionThreshold());
                 break;
             case Settings.PREF_HOT_CORNER_KEY:
-                mHotCorner.setGravity(mSettings.getHotCornerGravity());
-                mHotCorner.setShown(isConnectionEstablished() && mSettings.isHotCornerEnabled());
+                if (mSettings.isHotCornerEnabled()) {
+                    MumlaHotCorner corner = getOrCreateHotCorner();
+                    corner.setGravity(mSettings.getHotCornerGravity());
+                    corner.setShown(isConnectionEstablished());
+                } else if (mHotCorner != null) {
+                    mHotCorner.setShown(false);
+                }
                 break;
             case Settings.PREF_USE_TTS:
                 if (mTTS == null && mSettings.isTextToSpeechEnabled())
@@ -759,7 +793,7 @@ public class MumlaService extends HumlaService implements
             getApplicationContext().sendBroadcast(close);
         }
 
-        if (!mChannelOverlay.isShown()) {
+        if (mChannelOverlay == null || !mChannelOverlay.isShown()) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 if (!android.provider.Settings.canDrawOverlays(getApplicationContext())) {
                     Intent showSetting = new Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -770,7 +804,7 @@ public class MumlaService extends HumlaService implements
                     return;
                 }
             }
-            mChannelOverlay.show();
+            getOrCreateOverlay().show();
         } else {
             mChannelOverlay.hide();
         }
@@ -797,8 +831,8 @@ public class MumlaService extends HumlaService implements
 
     @Override
     public void setOverlayShown(boolean showOverlay) {
-        if(!mChannelOverlay.isShown()) {
-            mChannelOverlay.show();
+        if (mChannelOverlay == null || !mChannelOverlay.isShown()) {
+            getOrCreateOverlay().show();
         } else {
             mChannelOverlay.hide();
         }
@@ -806,7 +840,7 @@ public class MumlaService extends HumlaService implements
 
     @Override
     public boolean isOverlayShown() {
-        return mChannelOverlay.isShown();
+        return mChannelOverlay != null && mChannelOverlay.isShown();
     }
 
     @Override
@@ -1116,7 +1150,7 @@ public class MumlaService extends HumlaService implements
     public Message sendUserTextMessage(int session, String message) {
         Message msg = super.sendUserTextMessage(session, message);
 
-        mMessageLog.add(new IChatMessage.TextMessage(msg));
+        appendMessageLog(new IChatMessage.TextMessage(msg));
         return msg;
     }
 
@@ -1124,7 +1158,7 @@ public class MumlaService extends HumlaService implements
     public Message sendChannelTextMessage(int channel, String message, boolean tree) {
         Message msg = super.sendChannelTextMessage(channel, message, tree);
 
-        mMessageLog.add(new IChatMessage.TextMessage(msg));
+        appendMessageLog(new IChatMessage.TextMessage(msg));
         return msg;
     }
 

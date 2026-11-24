@@ -77,6 +77,11 @@ android {
         versionCode 3070300
         versionName gitDescribe
 
+        // Target real ARM walkie-talkies (armeabi-v7a) and modern ARM64 phones; strip ~4MB x86/x86_64 emulator libs
+        ndk {
+            abiFilters 'armeabi-v7a', 'arm64-v8a'
+        }
+
         buildConfigField "long", "TIMESTAMP", System.currentTimeMillis() + "L"
         buildConfigField "String", "VERSIONTAG", "\"" + gitDescribe.split("-")[0] + "\""
 
