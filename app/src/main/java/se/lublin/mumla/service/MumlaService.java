@@ -37,10 +37,6 @@ import android.widget.Toast;
 
 import androidx.preference.PreferenceManager;
 
-import org.jsoup.Jsoup;
-import org.jsoup.nodes.Document;
-import org.jsoup.nodes.Element;
-
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -211,8 +207,8 @@ public class MumlaService extends HumlaService implements
     private String[] mAlsaPlaybackPaths = new String[0];
     private final byte[] mAlsaReadBuf = new byte[32];
 
-    // Time & battery voice announcements (in-memory AudioTrack on dedicated worker; zero Flash wear)
-    private static final int VOICE_SAMPLE_RATE = 22050;
+    // Time & battery voice announcements (in-memory 16kHz AudioTrack on dedicated worker; zero Flash wear)
+    private static final int VOICE_SAMPLE_RATE = 16000;
     private volatile long mLastTimeAnnounceTimestamp = 0;
     private ScheduledExecutorService mVoiceExecutor;
     private AudioTrack mActiveVoiceTrack;
@@ -262,9 +258,8 @@ public class MumlaService extends HumlaService implements
                 mReconnectNotification = null;
             }
 
-            final String tor = mSettings.isTorEnabled() ? " (Tor)" : "";
             mNotification = MumlaConnectionNotification.create(MumlaService.this,
-                    getString(R.string.mumlaConnecting) + tor,
+                    getString(R.string.mumlaConnecting),
                     MumlaService.this);
             mNotification.show();
 
@@ -274,8 +269,7 @@ public class MumlaService extends HumlaService implements
         @Override
         public void onConnected() {
             if (mNotification != null) {
-                final String tor = mSettings.isTorEnabled() ? " (Tor)" : "";
-                mNotification.setCustomContentText(getString(R.string.connected) + tor);
+                mNotification.setCustomContentText(getString(R.string.connected));
                 mNotification.setActionsShown(true);
                 mNotification.show();
             }
@@ -290,18 +284,14 @@ public class MumlaService extends HumlaService implements
             if (e != null && !mSuppressNotifications) {
                 mReconnectNotification =
                         MumlaReconnectNotification.show(MumlaService.this,
-                                e.getMessage() + (mSettings.isTorEnabled() ? " (Tor)" : ""),
+                                e.getMessage(),
                                 isReconnecting(), MumlaService.this);
             }
         }
 
         @Override
         public void onUserConnected(IUser user) {
-            if (user.getTextureHash() != null &&
-                    user.getTexture() == null) {
-                // Request avatar data if available.
-                requestAvatar(user.getSession());
-            }
+            // Skip automatic avatar blob fetching on walkie-talkie to save bandwidth and RAM
             if (user.getCommentHash() != null && user.getComment() == null) {
                 // Automatically fetch user comment (>128 bytes) to sync GPS beacons.
                 requestComment(user.getSession());
@@ -342,10 +332,7 @@ public class MumlaService extends HumlaService implements
                 }
             }
 
-            if (user.getTextureHash() != null && user.getTexture() == null) {
-                // Update avatar data if available.
-                requestAvatar(user.getSession());
-            }
+            // Skip automatic avatar blob fetching to save RAM/bandwidth on walkie-talkie
             if (user.getCommentHash() != null && user.getComment() == null) {
                 // Automatically fetch updated comment (>128 bytes) to sync GPS beacons.
                 requestComment(user.getSession());
@@ -363,26 +350,14 @@ public class MumlaService extends HumlaService implements
                 return;
             }
 
-            // Split on / strip all HTML tags.
-            Document parsedMessage = Jsoup.parseBodyFragment(message.getMessage());
-            String strippedMessage = parsedMessage.text();
-
+            // Strip HTML tags using lightweight Android built-in parser (Jsoup removed)
+            String rawMsg = message.getMessage();
             String ttsMessage;
-            if(mShortTtsMessagesEnabled) {
-                for (Element anchor : parsedMessage.getElementsByTag("A")) {
-                    // Get just the domain portion of links
-                    String href = anchor.attr("href");
-                    // Only shorten anchors without custom text
-                    if (href != null && href.equals(anchor.text())) {
-                        String urlHostname = HtmlUtils.getHostnameFromLink(href);
-                        if (urlHostname != null) {
-                            anchor.text(getString(R.string.chat_message_tts_short_link, urlHostname));
-                        }
-                    }
-                }
-                ttsMessage = parsedMessage.text();
+            if (mShortTtsMessagesEnabled) {
+                ttsMessage = HtmlUtils.shortenLinksInHtml(rawMsg,
+                        hostname -> getString(R.string.chat_message_tts_short_link, hostname));
             } else {
-                ttsMessage = strippedMessage;
+                ttsMessage = HtmlUtils.stripHtml(rawMsg);
             }
 
             String formattedTtsMessage = getString(R.string.notification_message,

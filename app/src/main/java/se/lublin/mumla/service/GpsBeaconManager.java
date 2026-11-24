@@ -22,7 +22,6 @@ import androidx.core.content.ContextCompat;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
-import org.jsoup.Jsoup;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -50,6 +49,7 @@ import se.lublin.humla.model.IChannel;
 import se.lublin.humla.model.IMessage;
 import se.lublin.humla.model.IUser;
 import se.lublin.mumla.Settings;
+import se.lublin.mumla.util.HtmlUtils;
 
 /**
  * Low-power 5-minute GPS beacon manager for walkie-talkie devices.
@@ -404,7 +404,7 @@ public class GpsBeaconManager {
         if (user == null || user.getComment() == null) return;
         String comment = user.getComment();
         if (comment.contains(HEADER_BEACON)) {
-            String plain = Jsoup.parseBodyFragment(comment).text().trim();
+            String plain = HtmlUtils.stripHtml(comment);
             LocationRecord parsed = parseSingleBeaconMessage(user.getName(), comment, plain);
             if (parsed != null) {
                 updateRosterRecord(parsed);
@@ -432,7 +432,7 @@ public class GpsBeaconManager {
         if (!hasGpsHeader && rawHtml.length() > 32) {
             return false;
         }
-        String plain = Jsoup.parseBodyFragment(rawHtml).text().trim();
+        String plain = HtmlUtils.stripHtml(rawHtml);
 
         if (plain.startsWith(HEADER_CLEAR_USER)) {
             String target = plain.substring(HEADER_CLEAR_USER.length()).trim();
@@ -1116,7 +1116,7 @@ public class GpsBeaconManager {
     private void parseRosterSummaryIntoCache(String rawHtml) {
         String[] lines = rawHtml.split("<br\\s*/?>");
         for (String line : lines) {
-            String plainLine = Jsoup.parseBodyFragment(line).text().trim();
+            String plainLine = HtmlUtils.stripHtml(line);
             if (!plainLine.contains("maps.google.com/?q=") && !line.contains("maps.google.com/?q=")) {
                 continue;
             }

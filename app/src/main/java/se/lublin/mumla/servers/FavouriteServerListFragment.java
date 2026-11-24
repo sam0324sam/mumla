@@ -39,7 +39,6 @@ import java.util.List;
 import se.lublin.humla.model.Server;
 import se.lublin.mumla.R;
 import se.lublin.mumla.db.DatabaseProvider;
-import se.lublin.mumla.db.PublicServer;
 
 /**
  * Displays a list of servers, and allows the user to connect and edit them.
@@ -162,6 +161,5 @@ public class FavouriteServerListFragment extends Fragment implements OnItemClick
 
     public static interface ServerConnectHandler {
         public void connectToServer(Server server);
-        public void connectToPublicServer(PublicServer server);
     }
 }

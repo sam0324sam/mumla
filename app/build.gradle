@@ -82,6 +82,9 @@ android {
             abiFilters 'armeabi-v7a', 'arm64-v8a'
         }
 
+        // Trim 30+ unused locales from resources.arsc (keep Traditional Chinese & English only)
+        resourceConfigurations += ['zh-rTW', 'en']
+
         buildConfigField "long", "TIMESTAMP", System.currentTimeMillis() + "L"
         buildConfigField "String", "VERSIONTAG", "\"" + gitDescribe.split("-")[0] + "\""
 
@@ -111,6 +114,9 @@ android {
     buildTypes {
         // signingConfig beta will override
         release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             if (android.hasProperty("signingConfigs")) {
                 if (signingConfigs.hasProperty("release")) {
                     signingConfig = signingConfigs.release
@@ -121,6 +127,9 @@ android {
             }
         }
         debug {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             versionNameSuffix "-debug"
             if (android.hasProperty("signingConfigs")) {
                 if (signingConfigs.hasProperty("beta")) {
@@ -159,8 +168,6 @@ dependencies {
     implementation 'androidx.exifinterface:exifinterface:1.4.2'
     implementation 'com.google.android.material:material:1.13.0'
     implementation 'androidx.preference:preference:1.2.1'
-    implementation 'org.jsoup:jsoup:1.13.1'
-    implementation 'info.guardianproject.netcipher:netcipher:2.1.0'
 
     googImplementation 'com.android.billingclient:billing:7.1.1'
 }

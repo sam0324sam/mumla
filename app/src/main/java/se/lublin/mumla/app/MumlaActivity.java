@@ -66,9 +66,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import org.jetbrains.annotations.NotNull;
 import org.spongycastle.util.encoders.Hex;
 
-import java.net.InetSocketAddress;
 import java.net.MalformedURLException;
-import java.net.Socket;
 import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -76,9 +74,7 @@ import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
 
-import info.guardianproject.netcipher.proxy.OrbotHelper;
 import se.lublin.humla.HumlaService;
 import se.lublin.humla.IHumlaService;
 import se.lublin.humla.IHumlaSession;
@@ -98,11 +94,9 @@ import se.lublin.mumla.db.DatabaseCertificate;
 import se.lublin.mumla.db.DatabaseProvider;
 import se.lublin.mumla.db.MumlaDatabase;
 import se.lublin.mumla.db.MumlaSQLiteDatabase;
-import se.lublin.mumla.db.PublicServer;
 import se.lublin.mumla.preference.MumlaCertificateGenerateTask;
 import se.lublin.mumla.preference.SettingsActivity;
 import se.lublin.mumla.servers.FavouriteServerListFragment;
-import se.lublin.mumla.servers.PublicServerListFragment;
 import se.lublin.mumla.servers.ServerEditFragment;
 import se.lublin.mumla.service.IMumlaService;
 import se.lublin.mumla.service.MumlaService;
@@ -628,9 +622,6 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
             case DrawerAdapter.ITEM_FAVOURITES:
                 fragmentClass = FavouriteServerListFragment.class;
                 break;
-            case DrawerAdapter.ITEM_PUBLIC:
-                fragmentClass = PublicServerListFragment.class;
-                break;
             case DrawerAdapter.ITEM_SETTINGS:
                 Intent prefIntent = new Intent(this, SettingsActivity.class);
                 startActivity(prefIntent);
@@ -715,25 +706,6 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
             return;
         }
 
-        if (mSettings.isTorEnabled()) {
-            if (!OrbotHelper.isOrbotInstalled(this)) {
-                mSettings.disableTor();
-                new MaterialAlertDialogBuilder(MumlaActivity.this)
-                        .setMessage(R.string.orbot_not_installed)
-                        .setPositiveButton(android.R.string.ok, null)
-                        .show();
-                return;
-            } else {
-                if (!isPortOpen(HumlaConnection.TOR_HOST, HumlaConnection.TOR_PORT, 2000)) {
-                    new MaterialAlertDialogBuilder(MumlaActivity.this)
-                            .setMessage(getString(R.string.orbot_tor_failed, HumlaConnection.TOR_PORT))
-                            .setPositiveButton(android.R.string.ok, null)
-                            .show();
-                    return;
-                }
-            }
-        }
-
         mUserManuallyDisconnected = false;
         if (server != null && server.isSaved()) {
             mSettings.setLastServer(server.getId());
@@ -781,53 +753,6 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
         }
     }
 
-    private boolean isPortOpen(final String host, final int port, final int timeout) {
-        final AtomicBoolean open = new AtomicBoolean(false);
-        try {
-            Thread thread = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        Socket socket = new Socket();
-                        socket.connect(new InetSocketAddress(host, port), timeout);
-                        socket.close();
-                        open.set(true);
-                    } catch (Exception e) {
-                        Log.d(TAG, "isPortOpen() run()" + e);
-                    }
-                }
-            });
-            thread.start();
-            thread.join();
-            return open.get();
-        } catch (Exception e) {
-            Log.d(TAG, "isPortOpen() " + e);
-        }
-        return false;
-    }
-
-    public void connectToPublicServer(final PublicServer server) {
-        final Settings settings = Settings.getInstance(this);
-        final EditText usernameField = new EditText(this);
-        usernameField.setHint(settings.getDefaultUsername());
-        FrameLayout layout = new FrameLayout(this);
-        layout.addView(usernameField);
-        int horizontalPadding = (int) getResources().getDimension(R.dimen.padding_medium);
-        layout.setPadding(horizontalPadding, 0, horizontalPadding, 0);
-        new MaterialAlertDialogBuilder(this)
-                .setView(layout)
-                .setTitle(R.string.connectToServer)
-                .setPositiveButton(R.string.connect, (dialog, which) -> {
-                    if (usernameField.getText().toString().isEmpty()) {
-                        server.setUsername(settings.getDefaultUsername());
-                    } else {
-                        server.setUsername(usernameField.getText().toString());
-                    }
-                    connectToServer(server);
-                })
-                .show();
-    }
-
     private void setStayAwake(boolean stayAwake) {
         if (stayAwake) {
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -857,7 +782,7 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
                 // SRV lookup is done later, so we no longer show the port in the connection
                 // progress dialog (and only the configured hostname)
                 mConnectingDialog = new MaterialAlertDialogBuilder(this)
-                        .setTitle(getString(R.string.connecting_to_server, server.getHost()) + (mSettings.isTorEnabled() ? " (Tor)" : ""))
+                        .setTitle(getString(R.string.connecting_to_server, server.getHost()))
                         .setView(R.layout.dialog_progress)
                         .setCancelable(true)
                         .setOnCancelListener(dialog -> {
@@ -876,7 +801,7 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
                         break;
                     }
                     MaterialAlertDialogBuilder builder = new MaterialAlertDialogBuilder(MumlaActivity.this);
-                    builder.setTitle(getString(R.string.connectionRefused) + (mSettings.isTorEnabled() ? " (Tor)" : ""));
+                    builder.setTitle(getString(R.string.connectionRefused));
                     HumlaException error = getService().getConnectionError();
                     if (error != null && mService.isReconnecting()) {
                         builder.setMessage(error.getMessage() + "\n\n"
