@@ -33,10 +33,11 @@ public class PocketLockActivity extends Activity {
 
     private int mUnlockClicks = 0;
     private long mLastClickTime = 0;
+    private long mLastCloseDialogsTime = 0;
     private boolean mInitialKeyReleaseSeen = false;
     private PowerManager.WakeLock mFocusWakeLock;
 
-    private final Handler mUnlockHandler = new Handler(Looper.getMainLooper());
+    private final Handler mHandler = new Handler(Looper.getMainLooper());
     private boolean mIsUnlocking = false;
     private final Runnable mFinishRunnable = new Runnable() {
         @Override
@@ -58,12 +59,9 @@ public class PocketLockActivity extends Activity {
         }
     };
 
-    private final Handler mVolUpHandler = new Handler(Looper.getMainLooper());
-    private boolean mVolUpLongPressTriggered = false;
     private final Runnable mVolUpLongPressRunnable = new Runnable() {
         @Override
         public void run() {
-            mVolUpLongPressTriggered = true;
             Log.i(TAG, "Volume-Up Long Press detected in PocketLockActivity! Announcing time.");
             MumlaService service = MumlaService.getInstance();
             if (service != null) {
@@ -142,8 +140,8 @@ public class PocketLockActivity extends Activity {
 
         // 立即並延遲補發喚醒鎖，反制 ROM 在 F4 長按 1 秒時觸發的 Going to sleep，確保 100% 取得 Window Focus
         acquireWakeFocus();
-        mUnlockHandler.postDelayed(mEnsureWakeFocusRunnable, 180);
-        mUnlockHandler.postDelayed(mEnsureWakeFocusRunnable, 420);
+        mHandler.postDelayed(mEnsureWakeFocusRunnable, 180);
+        mHandler.postDelayed(mEnsureWakeFocusRunnable, 420);
 
         Log.i(TAG, "PocketLockActivity active (Display Blackout & Front Keys Blocked)");
     }
@@ -183,19 +181,27 @@ public class PocketLockActivity extends Activity {
         super.onWindowFocusChanged(hasFocus);
         // 若系統關機選單或休眠嘗試搶奪焦點，立即強制關閉對話框並拉回焦點！
         if (!hasFocus && isLocked() && !mIsUnlocking) {
+            closeSystemDialogsThrottled();
+            mHandler.postDelayed(mEnsureWakeFocusRunnable, 80);
+        }
+    }
+
+    private void closeSystemDialogsThrottled() {
+        long now = System.currentTimeMillis();
+        if (now - mLastCloseDialogsTime >= 400) {
+            mLastCloseDialogsTime = now;
             try {
                 sendBroadcast(new Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS));
             } catch (Exception ignored) {}
-            mUnlockHandler.postDelayed(mEnsureWakeFocusRunnable, 80);
         }
     }
 
     private boolean isVolumeDownPhysicalKey(int keyCode) {
-        return keyCode == KeyEvent.KEYCODE_F4 || keyCode == 134;
+        return keyCode == KeyEvent.KEYCODE_F4;
     }
 
     private boolean isVolumeDownSyntheticKey(int keyCode) {
-        return keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == 25;
+        return keyCode == KeyEvent.KEYCODE_VOLUME_DOWN;
     }
 
     @Override
@@ -208,8 +214,8 @@ public class PocketLockActivity extends Activity {
             sUnlockFinishTime = System.currentTimeMillis();
             if (action == KeyEvent.ACTION_UP && (isVolumeDownPhysicalKey(keyCode) || isVolumeDownSyntheticKey(keyCode))) {
                 // 收到最後一次放開事件後，緩衝 380ms 確保伴隨注入的合成 25 鍵碼與餘波完全被吃掉，再關閉視窗
-                mUnlockHandler.removeCallbacks(mFinishRunnable);
-                mUnlockHandler.postDelayed(mFinishRunnable, 380);
+                mHandler.removeCallbacks(mFinishRunnable);
+                mHandler.postDelayed(mFinishRunnable, 380);
             }
             return true;
         }
@@ -239,39 +245,27 @@ public class PocketLockActivity extends Activity {
 
         // 2. 音量鍵+ (KEYCODE_VOLUME_UP 24)：
         // 長按 500ms 觸發語音報時，短按吞噬不調整音量
-        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == 24) {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
             if (action == KeyEvent.ACTION_DOWN) {
                 if (event.getRepeatCount() == 0) {
-                    mVolUpLongPressTriggered = false;
-                    mVolUpHandler.postDelayed(mVolUpLongPressRunnable, 500);
+                    mHandler.removeCallbacks(mVolUpLongPressRunnable);
+                    mHandler.postDelayed(mVolUpLongPressRunnable, 500);
                 }
             } else if (action == KeyEvent.ACTION_UP) {
-                mVolUpHandler.removeCallbacks(mVolUpLongPressRunnable);
+                mHandler.removeCallbacks(mVolUpLongPressRunnable);
             }
             return true;
         }
 
         // 3. 返回鍵 (KEYCODE_BACK 4)：
-        // 防止長按返回鍵彈出系統關機選單，發送廣播秒殺對話框！
-        if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == 4) {
-            try {
-                sendBroadcast(new Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS));
-            } catch (Exception ignored) {}
+        // 防止長按返回鍵彈出系統關機選單，節流發送廣播秒殺對話框
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            closeSystemDialogsThrottled();
             return true;
         }
 
         // 4. 正面其餘所有按鍵（方向鍵、OK鍵、菜單鍵等）：
         // 100% 徹底阻擋吞噬，不發出聲音，不傳給底層 Mumla！
-        return true;
-    }
-
-    @Override
-    public boolean onKeyDown(int keyCode, KeyEvent event) {
-        return true;
-    }
-
-    @Override
-    public boolean onKeyUp(int keyCode, KeyEvent event) {
         return true;
     }
 
@@ -318,8 +312,8 @@ public class PocketLockActivity extends Activity {
         }
 
         // 保底 500ms 關閉（完整播放確認音並吃掉所有可能延遲的放開與合成 25 鍵碼注入事件）
-        mUnlockHandler.removeCallbacks(mFinishRunnable);
-        mUnlockHandler.postDelayed(mFinishRunnable, 500);
+        mHandler.removeCallbacks(mFinishRunnable);
+        mHandler.postDelayed(mFinishRunnable, 500);
     }
 
     @Override
@@ -329,9 +323,7 @@ public class PocketLockActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        mUnlockHandler.removeCallbacks(mFinishRunnable);
-        mUnlockHandler.removeCallbacks(mEnsureWakeFocusRunnable);
-        mVolUpHandler.removeCallbacks(mVolUpLongPressRunnable);
+        mHandler.removeCallbacksAndMessages(null);
         releaseWakeFocus();
         if (sInstance == this) {
             sInstance = null;

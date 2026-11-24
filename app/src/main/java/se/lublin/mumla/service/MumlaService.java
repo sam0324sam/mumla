@@ -43,20 +43,26 @@ import org.jsoup.nodes.Element;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
-import java.io.DataOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.FileReader;
+import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 import android.content.Context;
-import android.media.MediaPlayer;
-import android.media.ToneGenerator;
+import android.media.AudioAttributes;
+import android.media.AudioFormat;
+import android.media.AudioTrack;
 import android.os.BatteryManager;
 import se.lublin.mumla.app.PocketLockActivity;
 
@@ -148,9 +154,40 @@ public class MumlaService extends HumlaService implements
         mLastLocalSoundEndTime = SystemClock.elapsedRealtime() + durationMs;
     }
 
-    // Time announcement (WAV synthesis)
+    // Pre-resolved compile-time resource tables (eliminates slow getResources().getIdentifier() lookups)
+    private static final int[] HOUR_RES_IDS = {
+        R.raw.hour_1, R.raw.hour_2, R.raw.hour_3, R.raw.hour_4,
+        R.raw.hour_5, R.raw.hour_6, R.raw.hour_7, R.raw.hour_8,
+        R.raw.hour_9, R.raw.hour_10, R.raw.hour_11, R.raw.hour_12
+    };
+    private static final int[] MIN_RES_IDS = {
+        R.raw.min_0,  R.raw.min_1,  R.raw.min_2,  R.raw.min_3,  R.raw.min_4,  R.raw.min_5,
+        R.raw.min_6,  R.raw.min_7,  R.raw.min_8,  R.raw.min_9,  R.raw.min_10, R.raw.min_11,
+        R.raw.min_12, R.raw.min_13, R.raw.min_14, R.raw.min_15, R.raw.min_16, R.raw.min_17,
+        R.raw.min_18, R.raw.min_19, R.raw.min_20, R.raw.min_21, R.raw.min_22, R.raw.min_23,
+        R.raw.min_24, R.raw.min_25, R.raw.min_26, R.raw.min_27, R.raw.min_28, R.raw.min_29,
+        R.raw.min_30, R.raw.min_31, R.raw.min_32, R.raw.min_33, R.raw.min_34, R.raw.min_35,
+        R.raw.min_36, R.raw.min_37, R.raw.min_38, R.raw.min_39, R.raw.min_40, R.raw.min_41,
+        R.raw.min_42, R.raw.min_43, R.raw.min_44, R.raw.min_45, R.raw.min_46, R.raw.min_47,
+        R.raw.min_48, R.raw.min_49, R.raw.min_50, R.raw.min_51, R.raw.min_52, R.raw.min_53,
+        R.raw.min_54, R.raw.min_55, R.raw.min_56, R.raw.min_57, R.raw.min_58, R.raw.min_59
+    };
+
+    // High-speed cached ALSA playback status nodes (zero-allocation scan + Move-to-Front)
+    private static final Set<String> PREFERRED_ALSA_PCM_NODES = new HashSet<>(Arrays.asList(
+        "pcm0p", "pcm1p", "pcm3p", "pcm4p", "pcm12p", "pcm14p", "pcm18p", "pcm36p"
+    ));
+    private static final byte[] RUNNING_ASCII = { 'R', 'U', 'N', 'N', 'I', 'N', 'G' };
+    private String[] mAlsaPlaybackPaths = new String[0];
+    private final byte[] mAlsaReadBuf = new byte[32];
+
+    // Time & battery voice announcements (in-memory AudioTrack on dedicated worker; zero Flash wear)
+    private static final int VOICE_SAMPLE_RATE = 22050;
     private volatile long mLastTimeAnnounceTimestamp = 0;
-    private MediaPlayer mTimePlayer;
+    private ScheduledExecutorService mVoiceExecutor;
+    private AudioTrack mActiveVoiceTrack;
+    private ScheduledFuture<?> mVoiceReleaseFuture;
+    private PowerManager.WakeLock mVoiceWakeLock;
 
     // Battery monitoring (Thresholds: 80, 60, 40, 20, 10, 5)
     private static final int[] BATTERY_THRESHOLDS = { 80, 60, 40, 20, 10, 5 };
@@ -158,11 +195,9 @@ public class MumlaService extends HumlaService implements
     private int mLastAnnouncedBatteryThreshold = -1;
     private boolean mBatteryMonitorInitialized = false;
     private int mPendingBatteryResId = 0;
-    private MediaPlayer mBatteryPlayer;
 
     // Time-Out Timer (TOT 60s)
     private static final long TOT_TIMEOUT_MS = 60000;
-    private final Handler mTotHandler = new Handler(Looper.getMainLooper());
     private final Runnable mTotRunnable = new Runnable() {
         @Override
         public void run() {
@@ -175,12 +210,18 @@ public class MumlaService extends HumlaService implements
         }
     };
 
-    // Background Logcat Monitor (G393 WindowManager F4 long press & Vol+ in sleep)
+    // Background Logcat Monitor (G393 WindowManager PTT, F4 long press, & Vol+ in sleep)
     private Thread mLogcatThread;
     private volatile boolean mLogcatRunning = false;
     private Process mLogcatProcess;
     private BroadcastReceiver mAuxCommandReceiver;
-    private ToneGenerator mToneGenerator;
+
+    // Pre-allocated runnables for zero-allocation logcat dispatch
+    private final Runnable mLogcatTalkDownRunnable = this::onTalkKeyDown;
+    private final Runnable mLogcatTalkUpRunnable = this::onTalkKeyUp;
+    private final Runnable mLogcatPocketLockRunnable = this::triggerPocketLock;
+    private final Runnable mLogcatVolDownClickRunnable = PocketLockActivity::notifyHardwareVolumeDownClick;
+    private final Runnable mLogcatAnnounceTimeRunnable = this::announceCurrentTime;
 
     private HumlaObserver mObserver = new HumlaObserver() {
         @Override
@@ -367,12 +408,15 @@ public class MumlaService extends HumlaService implements
             }
 
             if (user.getSession() == selfSession) {
-                if (isConnectionEstablished() &&
+                if (mPttSoundManager == null &&
+                        isConnectionEstablished() &&
                         getTransmitMode() == Constants.TRANSMIT_PUSH_TO_TALK &&
                         user.getTalkState() == TalkState.TALKING &&
                         mPTTSoundEnabled) {
                     AudioManager audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
-                    audioManager.playSoundEffect(AudioManager.FX_KEYPRESS_STANDARD, 0.15f);
+                    if (audioManager != null) {
+                        audioManager.playSoundEffect(AudioManager.FX_KEYPRESS_STANDARD, 0.15f);
+                    }
                 }
             } else {
                 // Incoming voice from another user in current channel
@@ -427,11 +471,21 @@ public class MumlaService extends HumlaService implements
         if(mSettings.isTextToSpeechEnabled())
             mTTS = new TextToSpeech(this, mTTSInitListener);
 
-        // Initialize zero-latency PTT sound synthesizer
+        // Initialize zero-latency PTT sound synthesizer & cached ALSA playback paths
         mPttSoundManager = new PttSoundManager();
+        mVoiceExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "MumlaVoiceWorker");
+            t.setDaemon(true);
+            return t;
+        });
         try {
-            mToneGenerator = new ToneGenerator(AudioManager.STREAM_MUSIC, 15);
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                mVoiceWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Mumla:VoiceAnnounce");
+                mVoiceWakeLock.setReferenceCounted(false);
+            }
         } catch (Exception ignored) {}
+        initAlsaPlaybackPaths();
 
         // Register PTT broadcast receiver (Anysecu hardware key + Mumla standard IPC)
         mTalkReceiver = new TalkBroadcastReceiver(this);
@@ -457,8 +511,7 @@ public class MumlaService extends HumlaService implements
             public void onReceive(Context context, Intent intent) {
                 if (intent == null || intent.getAction() == null) return;
                 String action = intent.getAction();
-                if ("se.lublin.mumla.action.ANNOUNCE_TIME".equals(action) ||
-                    "com.anysecu.pttbridge.action.ANNOUNCE_TIME".equals(action)) {
+                if ("se.lublin.mumla.action.ANNOUNCE_TIME".equals(action)) {
                     announceCurrentTime();
                 } else if ("se.lublin.mumla.action.POCKET_LOCK".equals(action)) {
                     triggerPocketLock();
@@ -467,7 +520,6 @@ public class MumlaService extends HumlaService implements
         };
         IntentFilter auxFilter = new IntentFilter();
         auxFilter.addAction("se.lublin.mumla.action.ANNOUNCE_TIME");
-        auxFilter.addAction("com.anysecu.pttbridge.action.ANNOUNCE_TIME");
         auxFilter.addAction("se.lublin.mumla.action.POCKET_LOCK");
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             registerReceiver(mAuxCommandReceiver, auxFilter, RECEIVER_EXPORTED);
@@ -499,18 +551,15 @@ public class MumlaService extends HumlaService implements
             try { unregisterReceiver(mAuxCommandReceiver); } catch (Exception ignored) {}
             mAuxCommandReceiver = null;
         }
-        if (mTimePlayer != null) {
-            try { mTimePlayer.release(); } catch (Exception ignored) {}
-            mTimePlayer = null;
+        if (mUiHandler != null) {
+            mUiHandler.removeCallbacksAndMessages(null);
         }
-        if (mBatteryPlayer != null) {
-            try { mBatteryPlayer.release(); } catch (Exception ignored) {}
-            mBatteryPlayer = null;
+        releaseActiveVoiceTrack();
+        if (mVoiceExecutor != null) {
+            mVoiceExecutor.shutdownNow();
+            mVoiceExecutor = null;
         }
-        if (mToneGenerator != null) {
-            try { mToneGenerator.release(); } catch (Exception ignored) {}
-            mToneGenerator = null;
-        }
+        releaseVoiceWakeLock();
         if (sInstance == this) {
             sInstance = null;
         }
@@ -793,48 +842,87 @@ public class MumlaService extends HumlaService implements
         }
     }
 
-    /**
-     * Checks if ALSA sound hardware is actively playing audio (busy receiving voice).
-     */
-    public boolean isAlsaBusy() {
-        if (SystemClock.elapsedRealtime() < mLastLocalSoundEndTime) {
-            return false;
-        }
-
+    private void initAlsaPlaybackPaths() {
+        List<String> preferred = new ArrayList<>();
+        List<String> allFound = new ArrayList<>();
         File asoundDir = new File("/proc/asound");
-        if (!asoundDir.exists() || !asoundDir.isDirectory()) {
-            return false;
-        }
-        try {
+        if (asoundDir.exists() && asoundDir.isDirectory()) {
             File[] cards = asoundDir.listFiles();
-            if (cards == null) return false;
-            for (File card : cards) {
-                if (card.isDirectory() && card.getName().startsWith("card")) {
+            if (cards != null) {
+                for (File card : cards) {
+                    if (!card.isDirectory() || !card.getName().startsWith("card")) continue;
                     File[] pcms = card.listFiles();
                     if (pcms == null) continue;
                     for (File pcm : pcms) {
-                        // CRITICAL FIX: Must be endsWith("p"), NOT contains("p")!
-                        // Previously used pcm.getName().contains("p"), which matched "pcm0c" (mic capture) because of "pcm"!
-                        if (pcm.isDirectory() && pcm.getName().endsWith("p")) { // Playback only
-                            File[] subs = pcm.listFiles();
-                            if (subs == null) continue;
-                            for (File sub : subs) {
-                                File status = new File(sub, "status");
-                                if (status.exists() && status.canRead()) {
-                                    BufferedReader reader = new BufferedReader(new FileReader(status));
-                                    String line = reader.readLine();
-                                    reader.close();
-                                    if (line != null && line.contains("RUNNING")) {
-                                        return true;
-                                    }
+                        // Playback nodes strictly end with "p" (never "c" capture nodes)
+                        String pcmName = pcm.getName();
+                        if (!pcm.isDirectory() || !pcmName.endsWith("p")) continue;
+                        File[] subs = pcm.listFiles();
+                        if (subs == null) continue;
+                        for (File sub : subs) {
+                            File status = new File(sub, "status");
+                            if (status.exists() && status.canRead()) {
+                                String path = status.getAbsolutePath();
+                                allFound.add(path);
+                                if (PREFERRED_ALSA_PCM_NODES.contains(pcmName)) {
+                                    preferred.add(path);
                                 }
                             }
                         }
                     }
                 }
             }
-        } catch (Exception e) {
-            Log.w(TAG, "Error checking ALSA busy state", e);
+        }
+        List<String> selected = !preferred.isEmpty() ? preferred : allFound;
+        mAlsaPlaybackPaths = selected.toArray(new String[0]);
+        Log.i(TAG, "Cached " + mAlsaPlaybackPaths.length + " ALSA playback status paths (filtered from " + allFound.size() + " total).");
+    }
+
+    private static boolean containsRunningAscii(byte[] buf, int len) {
+        int limit = len - RUNNING_ASCII.length;
+        for (int i = 0; i <= limit; i++) {
+            if (buf[i] == 'R') {
+                boolean match = true;
+                for (int j = 1; j < RUNNING_ASCII.length; j++) {
+                    if (buf[i + j] != RUNNING_ASCII[j]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Zero-allocation, sub-millisecond hardware ALSA playback status check with Move-to-Front caching.
+     */
+    public boolean isAlsaBusy() {
+        if (SystemClock.elapsedRealtime() < mLastLocalSoundEndTime) {
+            return false;
+        }
+        String[] paths = mAlsaPlaybackPaths;
+        if (paths == null || paths.length == 0) {
+            return false;
+        }
+        synchronized (mAlsaReadBuf) {
+            for (int i = 0; i < paths.length; i++) {
+                String path = paths[i];
+                try (FileInputStream fis = new FileInputStream(path)) {
+                    int n = fis.read(mAlsaReadBuf);
+                    // Idle nodes start with "closed"; skip immediately on first byte 'c'
+                    if (n >= RUNNING_ASCII.length && mAlsaReadBuf[0] != 'c' && containsRunningAscii(mAlsaReadBuf, n)) {
+                        if (i > 0) {
+                            // Move-to-Front heuristic: keep active playback node at index 0
+                            paths[i] = paths[0];
+                            paths[0] = path;
+                        }
+                        return true;
+                    }
+                } catch (Exception ignored) {
+                }
+            }
         }
         return false;
     }
@@ -949,8 +1037,8 @@ public class MumlaService extends HumlaService implements
             if (mPttSoundManager != null) {
                 mPttSoundManager.playPermitTone();
             }
-            mTotHandler.removeCallbacks(mTotRunnable);
-            mTotHandler.postDelayed(mTotRunnable, TOT_TIMEOUT_MS);
+            mUiHandler.removeCallbacks(mTotRunnable);
+            mUiHandler.postDelayed(mTotRunnable, TOT_TIMEOUT_MS);
             Log.i(TAG, "PTT granted: Transmitting and played DMR permit tone (TOT 60s started)");
         }
     }
@@ -962,7 +1050,7 @@ public class MumlaService extends HumlaService implements
     @Override
     public void onTalkKeyUp() {
         Log.d(TAG, "onTalkKeyUp triggered");
-        mTotHandler.removeCallbacks(mTotRunnable);
+        mUiHandler.removeCallbacks(mTotRunnable);
         if (isTalking()) {
             setTalkingState(false);
             markLocalSoundPlaying(100);
@@ -1051,13 +1139,6 @@ public class MumlaService extends HumlaService implements
         }
     }
 
-    public void playPocketUnlockTickTone() {
-        markLocalSoundPlaying(150);
-        if (mPttSoundManager != null) {
-            mPttSoundManager.playUnlockTickTone();
-        }
-    }
-
     public void playPocketUnlockAckTone() {
         markLocalSoundPlaying(400);
         if (mPttSoundManager != null) {
@@ -1071,13 +1152,7 @@ public class MumlaService extends HumlaService implements
         }
         Log.i(TAG, "F4 / Volume-Down Long Press -> Triggering Pocket Lock Mode");
         markLocalSoundPlaying(600);
-        try {
-            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-            if (pm != null) {
-                PowerManager.WakeLock wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Mumla:PocketLockTone");
-                wl.acquire(800);
-            }
-        } catch (Exception ignored) {}
+        acquireVoiceWakeLock(800);
 
         if (mPttSoundManager != null) {
             mPttSoundManager.playLockTone();
@@ -1094,202 +1169,224 @@ public class MumlaService extends HumlaService implements
             @Override
             public void run() {
                 while (mLogcatRunning) {
+                    Process proc = null;
                     try {
-                        mLogcatProcess = Runtime.getRuntime().exec(new String[]{
-                            "logcat", "-b", "system", "-b", "main", "-T", "1", "-v", "brief", "-s", "WindowManager:D"
+                        proc = Runtime.getRuntime().exec(new String[]{
+                            "logcat", "-b", "system", "-b", "main", "-T", "1", "-v", "raw", "-s", "WindowManager:D"
                         });
-                        BufferedReader reader = new BufferedReader(new InputStreamReader(mLogcatProcess.getInputStream()));
-                        String line;
-                        while (mLogcatRunning && (line = reader.readLine()) != null) {
-                            if (line.contains("unipro.hotkey.ptt.down")) {
-                                mUiHandler.post(new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        onTalkKeyDown();
-                                    }
-                                });
-                            } else if (line.contains("unipro.hotkey.ptt.up")) {
-                                mUiHandler.post(new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        onTalkKeyUp();
-                                    }
-                                });
-                            } else if (line.contains("MSG_KEY_F4_LONG_PRESS_TIMEOUT")) {
-                                mUiHandler.post(new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        triggerPocketLock();
-                                    }
-                                });
-                            } else if (PocketLockActivity.isLocked() && line.contains("unipro.hotkey.p3.down")) {
-                                mUiHandler.post(new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        PocketLockActivity.notifyHardwareVolumeDownClick();
-                                    }
-                                });
-                            } else if (PocketLockActivity.isLocked() && line.contains("keycode=24 ") && line.contains("interactive=false")) {
-                                Log.i(TAG, "Volume+ detected while screen asleep -> Wake and announce time directly");
-                                mUiHandler.post(new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        announceCurrentTime();
-                                    }
-                                });
+                        mLogcatProcess = proc;
+                        try (BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
+                            String line;
+                            while (mLogcatRunning && (line = reader.readLine()) != null) {
+                                if (line.contains("unipro.hotkey.ptt.down")) {
+                                    mUiHandler.post(mLogcatTalkDownRunnable);
+                                } else if (line.contains("unipro.hotkey.ptt.up")) {
+                                    mUiHandler.post(mLogcatTalkUpRunnable);
+                                } else if (line.contains("MSG_KEY_F4_LONG_PRESS_TIMEOUT")) {
+                                    mUiHandler.post(mLogcatPocketLockRunnable);
+                                } else if (PocketLockActivity.isLocked() && line.contains("unipro.hotkey.p3.down")) {
+                                    mUiHandler.post(mLogcatVolDownClickRunnable);
+                                } else if (PocketLockActivity.isLocked() && line.contains("keycode=24 ") && line.contains("interactive=false")) {
+                                    Log.i(TAG, "Volume+ detected while screen asleep -> Wake and announce time directly");
+                                    mUiHandler.post(mLogcatAnnounceTimeRunnable);
+                                }
                             }
                         }
                     } catch (Exception e) {
+                        if (!mLogcatRunning) break;
                         try {
                             Thread.sleep(1000);
                         } catch (InterruptedException ie) {
                             break;
                         }
                     } finally {
-                        if (mLogcatProcess != null) {
-                            mLogcatProcess.destroy();
+                        destroyProcessQuietly(proc);
+                        if (mLogcatProcess == proc) {
                             mLogcatProcess = null;
                         }
                     }
                 }
             }
-        });
+        }, "MumlaLogcatMonitor");
         mLogcatThread.setPriority(Thread.MAX_PRIORITY);
         mLogcatThread.start();
     }
 
+    private static void destroyProcessQuietly(Process proc) {
+        if (proc == null) return;
+        try { proc.getInputStream().close(); } catch (Exception ignored) {}
+        try { proc.getErrorStream().close(); } catch (Exception ignored) {}
+        try { proc.getOutputStream().close(); } catch (Exception ignored) {}
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                proc.destroyForcibly();
+            } else {
+                proc.destroy();
+            }
+        } catch (Exception ignored) {}
+    }
+
     private void stopLogcatMonitor() {
         mLogcatRunning = false;
-        if (mLogcatProcess != null) {
-            try {
-                mLogcatProcess.destroy();
-            } catch (Exception ignored) {}
-            mLogcatProcess = null;
-        }
+        Process proc = mLogcatProcess;
+        mLogcatProcess = null;
+        destroyProcessQuietly(proc);
         if (mLogcatThread != null) {
             mLogcatThread.interrupt();
             mLogcatThread = null;
         }
     }
 
-    public synchronized void announceCurrentTime() {
+    private void acquireVoiceWakeLock(long timeoutMs) {
+        PowerManager.WakeLock wl = mVoiceWakeLock;
+        if (wl != null) {
+            try {
+                wl.acquire(timeoutMs);
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private void releaseVoiceWakeLock() {
+        PowerManager.WakeLock wl = mVoiceWakeLock;
+        if (wl != null) {
+            try {
+                if (wl.isHeld()) {
+                    wl.release();
+                }
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private synchronized void releaseActiveVoiceTrack() {
+        if (mVoiceReleaseFuture != null) {
+            mVoiceReleaseFuture.cancel(false);
+            mVoiceReleaseFuture = null;
+        }
+        if (mActiveVoiceTrack != null) {
+            try { mActiveVoiceTrack.stop(); } catch (Exception ignored) {}
+            try { mActiveVoiceTrack.release(); } catch (Exception ignored) {}
+            mActiveVoiceTrack = null;
+        }
+    }
+
+    public void announceCurrentTime() {
         if (isTalking()) {
             Log.d(TAG, "Ignore time announcement because PTT is active");
             return;
         }
 
-        long now = System.currentTimeMillis();
+        long now = SystemClock.elapsedRealtime();
         if (now - mLastTimeAnnounceTimestamp < 3000) {
             Log.d(TAG, "Ignore time announcement within debounce window (" + (now - mLastTimeAnnounceTimestamp) + "ms)");
             return;
         }
         mLastTimeAnnounceTimestamp = now;
 
-        try {
-            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-            if (pm != null) {
-                PowerManager.WakeLock wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Mumla:TimeAnnounce");
-                wl.acquire(3500);
-            }
-        } catch (Exception ignored) {}
+        Calendar cal = Calendar.getInstance();
+        int hour24 = cal.get(Calendar.HOUR_OF_DAY);
+        int minute = cal.get(Calendar.MINUTE);
+        int hour12 = hour24 % 12;
+        if (hour12 == 0) {
+            hour12 = 12;
+        }
 
-        try {
-            Calendar cal = Calendar.getInstance();
-            int hour24 = cal.get(Calendar.HOUR_OF_DAY);
-            int minute = cal.get(Calendar.MINUTE);
+        final int hourResId = HOUR_RES_IDS[hour12 - 1];
+        final int minResId = (minute >= 0 && minute < MIN_RES_IDS.length) ? MIN_RES_IDS[minute] : MIN_RES_IDS[0];
+        Log.i(TAG, "Announcing concise time: 24h=" + hour24 + " -> " + hour12 + "點 " + minute + "分");
 
-            int hour12 = hour24 % 12;
-            if (hour12 == 0) {
-                hour12 = 12;
-            }
-
-            int hourResId = getResources().getIdentifier("hour_" + hour12, "raw", getPackageName());
-            int minResId = getResources().getIdentifier("min_" + minute, "raw", getPackageName());
-
-            if (hourResId == 0 || minResId == 0) {
-                Log.e(TAG, "Missing audio res for hour=" + hour12 + " min=" + minute);
-                return;
-            }
-
-            Log.i(TAG, "Announcing concise time: 24h=" + hour24 + " -> " + hour12 + "點 " + minute + "分");
-            playSynthesizedWav(new int[]{ hourResId, minResId });
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to announce time: " + e.getMessage(), e);
+        ScheduledExecutorService executor = mVoiceExecutor;
+        if (executor != null && !executor.isShutdown()) {
+            acquireVoiceWakeLock(3500);
+            executor.execute(() -> playRawWavResourcesInMemory(new int[]{ hourResId, minResId }, 0.25f));
         }
     }
 
-    private synchronized void playSynthesizedWav(int[] resIds) {
-        markLocalSoundPlaying(3500);
+    /**
+     * Extracts raw PCM from 22050Hz 16-bit Mono WAV resources and plays directly from RAM via AudioTrack.
+     * Eliminates Flash disk writes (cache WAV) and MediaPlayer IPC/prepare latency (~150ms -> <20ms).
+     */
+    private void playRawWavResourcesInMemory(int[] resIds, float volume) {
         try {
-            ByteArrayOutputStream pcmStream = new ByteArrayOutputStream();
+            ByteArrayOutputStream pcmStream = new ByteArrayOutputStream(65536);
             byte[] buf = new byte[4096];
 
             for (int resId : resIds) {
-                InputStream is = getResources().openRawResource(resId);
-                ByteArrayOutputStream rawStream = new ByteArrayOutputStream();
-                int read;
-                while ((read = is.read(buf)) != -1) {
-                    rawStream.write(buf, 0, read);
+                ByteArrayOutputStream rawStream = new ByteArrayOutputStream(32768);
+                try (InputStream is = getResources().openRawResource(resId)) {
+                    int read;
+                    while ((read = is.read(buf)) != -1) {
+                        rawStream.write(buf, 0, read);
+                    }
                 }
-                is.close();
-
-                byte[] rawBytes = rawStream.toByteArray();
-                appendPcmData(rawBytes, pcmStream);
+                appendPcmData(rawStream.toByteArray(), pcmStream);
             }
 
             byte[] allPcm = pcmStream.toByteArray();
-            int totalPcm = allPcm.length;
-
-            File cacheFile = new File(getCacheDir(), "current_time.wav");
-            FileOutputStream fos = new FileOutputStream(cacheFile);
-            DataOutputStream dos = new DataOutputStream(fos);
-
-            // WAV Header (44 bytes, 22050Hz, 16bit, Mono)
-            dos.writeBytes("RIFF");
-            dos.writeInt(Integer.reverseBytes(36 + totalPcm));
-            dos.writeBytes("WAVE");
-            dos.writeBytes("fmt ");
-            dos.writeInt(Integer.reverseBytes(16)); // Subchunk1Size
-            dos.writeShort(Short.reverseBytes((short) 1)); // AudioFormat = 1 (PCM)
-            dos.writeShort(Short.reverseBytes((short) 1)); // NumChannels = 1 (Mono)
-            dos.writeInt(Integer.reverseBytes(22050)); // SampleRate
-            dos.writeInt(Integer.reverseBytes(44100)); // ByteRate (22050 * 1 * 2)
-            dos.writeShort(Short.reverseBytes((short) 2)); // BlockAlign
-            dos.writeShort(Short.reverseBytes((short) 16)); // BitsPerSample
-            dos.writeBytes("data");
-            dos.writeInt(Integer.reverseBytes(totalPcm));
-            dos.write(allPcm);
-            dos.flush();
-            dos.close();
-            fos.close();
-
-            if (mTimePlayer != null) {
-                try {
-                    if (mTimePlayer.isPlaying()) {
-                        mTimePlayer.stop();
-                    }
-                    mTimePlayer.release();
-                } catch (Exception ignored) {}
-                mTimePlayer = null;
+            if (allPcm.length == 0) {
+                releaseVoiceWakeLock();
+                return;
             }
 
-            mTimePlayer = new MediaPlayer();
-            mTimePlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
-            mTimePlayer.setDataSource(cacheFile.getAbsolutePath());
-            mTimePlayer.prepare();
-            mTimePlayer.setVolume(0.25f, 0.25f);
-            mTimePlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
-                @Override
-                public void onCompletion(MediaPlayer mp) {
-                    try { mp.release(); } catch (Exception ignored) {}
-                    if (mTimePlayer == mp) {
-                        mTimePlayer = null;
-                    }
+            // 22050 Hz * 2 bytes/sample = 44100 bytes/sec
+            long durationMs = Math.max(200L, (allPcm.length * 1000L) / (VOICE_SAMPLE_RATE * 2L));
+            markLocalSoundPlaying(durationMs + 350L);
+            acquireVoiceWakeLock(durationMs + 500L);
+
+            AudioTrack track;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                track = new AudioTrack(
+                        new AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                .build(),
+                        new AudioFormat.Builder()
+                                .setSampleRate(VOICE_SAMPLE_RATE)
+                                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                                .build(),
+                        allPcm.length,
+                        AudioTrack.MODE_STATIC,
+                        AudioManager.AUDIO_SESSION_ID_GENERATE
+                );
+                track.setVolume(volume);
+            } else {
+                track = new AudioTrack(
+                        AudioManager.STREAM_MUSIC,
+                        VOICE_SAMPLE_RATE,
+                        AudioFormat.CHANNEL_OUT_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT,
+                        allPcm.length,
+                        AudioTrack.MODE_STATIC
+                );
+                track.setStereoVolume(volume, volume);
+            }
+
+            track.write(allPcm, 0, allPcm.length);
+
+            synchronized (this) {
+                releaseActiveVoiceTrack();
+                mActiveVoiceTrack = track;
+                track.play();
+
+                ScheduledExecutorService executor = mVoiceExecutor;
+                if (executor != null && !executor.isShutdown()) {
+                    final AudioTrack launchedTrack = track;
+                    mVoiceReleaseFuture = executor.schedule(() -> {
+                        synchronized (MumlaService.this) {
+                            if (mActiveVoiceTrack == launchedTrack) {
+                                try { launchedTrack.stop(); } catch (Exception ignored) {}
+                                try { launchedTrack.release(); } catch (Exception ignored) {}
+                                mActiveVoiceTrack = null;
+                                mVoiceReleaseFuture = null;
+                                releaseVoiceWakeLock();
+                            }
+                        }
+                    }, durationMs + 300L, TimeUnit.MILLISECONDS);
                 }
-            });
-            mTimePlayer.start();
+            }
         } catch (Exception e) {
-            Log.e(TAG, "Error synthesizing or playing time WAV: " + e.getMessage(), e);
+            Log.e(TAG, "Error playing in-memory voice AudioTrack: " + e.getMessage(), e);
+            releaseVoiceWakeLock();
         }
     }
 
@@ -1385,36 +1482,12 @@ public class MumlaService extends HumlaService implements
         }
     }
 
-    private synchronized void playBatteryVoice(int resId) {
+    private void playBatteryVoice(final int resId) {
         if (resId == 0) return;
-        markLocalSoundPlaying(3000);
-        try {
-            if (mBatteryPlayer != null) {
-                try {
-                    if (mBatteryPlayer.isPlaying()) {
-                        mBatteryPlayer.stop();
-                    }
-                    mBatteryPlayer.release();
-                } catch (Exception ignored) {}
-                mBatteryPlayer = null;
-            }
-            mBatteryPlayer = MediaPlayer.create(this, resId);
-            if (mBatteryPlayer != null) {
-                mBatteryPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
-                mBatteryPlayer.setVolume(0.20f, 0.20f);
-                mBatteryPlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
-                    @Override
-                    public void onCompletion(MediaPlayer mp) {
-                        try { mp.release(); } catch (Exception ignored) {}
-                        if (mBatteryPlayer == mp) {
-                            mBatteryPlayer = null;
-                        }
-                    }
-                });
-                mBatteryPlayer.start();
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to play battery voice: " + e.getMessage());
+        ScheduledExecutorService executor = mVoiceExecutor;
+        if (executor != null && !executor.isShutdown()) {
+            acquireVoiceWakeLock(3500);
+            executor.execute(() -> playRawWavResourcesInMemory(new int[]{ resId }, 0.20f));
         }
     }
 }

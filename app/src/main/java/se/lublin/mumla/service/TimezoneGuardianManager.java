@@ -31,6 +31,7 @@ import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -61,8 +62,10 @@ public class TimezoneGuardianManager {
 
     private ConnectivityManager.NetworkCallback mNetworkCallback;
     private BroadcastReceiver mSyncBroadcastReceiver;
+    private ScheduledFuture<?> mPeriodicFuture;
     private boolean mStarted = false;
-    private long mLastSyncTimestamp = 0;
+    private volatile long mLastSyncTimestamp = 0;
+    private final Runnable mSyncRunnable = this::syncNow;
 
     public static TimezoneGuardianManager getInstance(Context context) {
         if (sInstance == null) {
@@ -117,7 +120,7 @@ public class TimezoneGuardianManager {
                         }
                     }
                     Log.i(TAG, "Received sync broadcast, triggering sync");
-                    syncNow();
+                    syncNow(true);
                 }
             }
         };
@@ -151,8 +154,11 @@ public class TimezoneGuardianManager {
             Log.w(TAG, "Failed to register NetworkCallback", e);
         }
 
-        // 4. Also schedule executor fixed delay as in-process fallback
-        mExecutor.scheduleWithFixedDelay(this::syncNow, 1, 1, TimeUnit.HOURS);
+        // 4. Also schedule executor fixed delay as in-process fallback (properly tracked for stop())
+        if (mPeriodicFuture != null) {
+            mPeriodicFuture.cancel(false);
+        }
+        mPeriodicFuture = mExecutor.scheduleWithFixedDelay(() -> syncNow(false), 1, 1, TimeUnit.HOURS);
 
         // 5. Initial sync
         triggerSyncDelayed(1500);
@@ -167,6 +173,12 @@ public class TimezoneGuardianManager {
         }
         mStarted = false;
         Log.i(TAG, "Stopping TimezoneGuardianManager...");
+
+        mMainHandler.removeCallbacks(mSyncRunnable);
+        if (mPeriodicFuture != null) {
+            mPeriodicFuture.cancel(false);
+            mPeriodicFuture = null;
+        }
 
         if (mSyncBroadcastReceiver != null) {
             try {
@@ -189,21 +201,32 @@ public class TimezoneGuardianManager {
     }
 
     /**
-     * Trigger a sync after a brief delay (debouncing).
+     * Trigger a sync after a brief delay (properly debounced via stable Runnable reference).
      */
     public void triggerSyncDelayed(long delayMs) {
-        mMainHandler.removeCallbacks(this::syncNow);
-        mMainHandler.postDelayed(this::syncNow, delayMs);
+        mMainHandler.removeCallbacks(mSyncRunnable);
+        mMainHandler.postDelayed(mSyncRunnable, delayMs);
     }
 
     /**
      * Run timezone synchronization immediately on a background thread.
      */
     public void syncNow() {
-        mExecutor.execute(this::performSync);
+        syncNow(true);
     }
 
-    private void performSync() {
+    private void syncNow(boolean force) {
+        mExecutor.execute(() -> performSync(force));
+    }
+
+    private void performSync(boolean force) {
+        // Avoid duplicate HTTP lookups when both AlarmManager and ScheduledExecutor fire near the same hour
+        long nowElapsed = SystemClock.elapsedRealtime();
+        if (!force && mLastSyncTimestamp > 0 && (nowElapsed - mLastSyncTimestamp < 50 * 60 * 1000L)) {
+            Log.d(TAG, "Skipping redundant periodic timezone sync (synced recently).");
+            return;
+        }
+
         if (!mIsSyncing.compareAndSet(false, true)) {
             Log.d(TAG, "Sync already in progress, skipping.");
             return;
@@ -314,6 +337,10 @@ public class TimezoneGuardianManager {
     public void applySystemTimezone(String tzId) {
         String currentProp = getSystemProperty("persist.sys.timezone", "");
         String currentDefault = TimeZone.getDefault().getID();
+        if (tzId.equals(currentDefault) && tzId.equals(currentProp)) {
+            Log.d(TAG, "Timezone already matches " + tzId + ", skipping redundant system apply.");
+            return;
+        }
         Log.i(TAG, "applySystemTimezone: target=" + tzId + ", currentDefault=" + currentDefault + ", persist.sys.timezone=" + currentProp);
 
         // 1. AlarmManager.setTimeZone

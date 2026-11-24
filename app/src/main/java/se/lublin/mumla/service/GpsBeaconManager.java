@@ -67,8 +67,10 @@ public class GpsBeaconManager {
     private static final String TAG = "GpsBeaconManager";
 
     public static final long BEACON_INTERVAL_MS = 5 * 60 * 1000L; // 5 minutes
+    public static final long MAX_COLD_BACKOFF_INTERVAL_MS = 15 * 60 * 1000L; // 15 min max indoor backoff
     public static final long INITIAL_DELAY_MS = 15 * 1000L;      // 15 seconds after start
     public static final long GPS_FIX_TIMEOUT_MS = 45 * 1000L;    // 45 seconds warm fix timeout
+    public static final long GPS_COLD_FIX_TIMEOUT_MS = 90 * 1000L; // 90 seconds cold fix cap to save battery indoors
 
     public static final String HEADER_BEACON = "📍 [定位回報]";
     public static final String HEADER_ROSTER = "📋 【全員最近定位紀錄總表】";
@@ -80,6 +82,7 @@ public class GpsBeaconManager {
     private static final String MASKED_BSSID = "02:00:00:00:00:00";
 
     private static final Pattern BATTERY_PATTERN = Pattern.compile("🔋\\s*(\\d+)%");
+    private static final Pattern ROSTER_BATTERY_PATTERN = Pattern.compile("電量\\s*(\\d+)%");
     private static final Pattern COORDS_PATTERN = Pattern.compile("maps\\.google\\.com/\\?q=([-+]?\\d+(?:\\.\\d+)?),([-+]?\\d+(?:\\.\\d+)?)");
     private static final Pattern TIME_AND_SOURCE_PATTERN = Pattern.compile("🕒\\s*(\\d{2}/\\d{2}\\s+\\d{2}:\\d{2}:\\d{2})\\s*\\(([^()]+)\\)");
     private static final Pattern SOURCE_PATTERN = Pattern.compile("\\(([^()]+)\\)");
@@ -103,6 +106,7 @@ public class GpsBeaconManager {
 
     private Location mLastAccurateLocation;
     private String mLastFixBssid;
+    private int mConsecutiveColdFailures = 0;
 
     private volatile int mLatestBatteryPercent = 100;
     private volatile boolean mLatestIsCharging = false;
@@ -172,9 +176,13 @@ public class GpsBeaconManager {
         @Override
         public void run() {
             if (!mStarted) return;
-            Log.i(TAG, "5-minute periodic beacon tick triggered.");
+            Log.i(TAG, "Periodic beacon tick triggered (coldFailures=" + mConsecutiveColdFailures + ").");
             performLocationSample(false, null);
-            mMainHandler.postDelayed(this, BEACON_INTERVAL_MS);
+            long nextInterval = BEACON_INTERVAL_MS;
+            if (mLastAccurateLocation == null && mConsecutiveColdFailures > 0) {
+                nextInterval = Math.min(BEACON_INTERVAL_MS * (mConsecutiveColdFailures + 1), MAX_COLD_BACKOFF_INTERVAL_MS);
+            }
+            mMainHandler.postDelayed(this, nextInterval);
         }
     };
 
@@ -394,6 +402,13 @@ public class GpsBeaconManager {
             return false;
         }
         String rawHtml = message.getMessage();
+        // Fast path: skip expensive Jsoup DOM parsing for normal chat messages unrelated to GPS
+        boolean hasGpsHeader = rawHtml.contains(HEADER_CLEAR_USER)
+                || rawHtml.contains(HEADER_ROSTER)
+                || rawHtml.contains(HEADER_BEACON);
+        if (!hasGpsHeader && rawHtml.length() > 32) {
+            return false;
+        }
         String plain = Jsoup.parseBodyFragment(rawHtml).text().trim();
 
         if (plain.startsWith(HEADER_CLEAR_USER)) {
@@ -519,13 +534,14 @@ public class GpsBeaconManager {
                 if (LocationManager.GPS_PROVIDER.equals(provider)) {
                     Log.i(TAG, "Received hardware GPS fix: " + location.getLatitude() + "," + location.getLongitude());
                     cancelActiveFixListener();
+                    mConsecutiveColdFailures = 0;
                     mLastAccurateLocation = location;
                     mLastFixBssid = getConnectedWifiBssid();
                     String tag = customReasonTag != null ? customReasonTag : "GPS衛星";
                     onLocationResolved(location.getLatitude(), location.getLongitude(), tag, true);
                 } else if (LocationManager.NETWORK_PROVIDER.equals(provider)) {
                     mActiveNetworkFix = location;
-                    Log.d(TAG, "Buffered Network fix while waiting up to 8s for GPS.");
+                    Log.d(TAG, "Buffered Network fix while waiting for GPS.");
                 }
             }
 
@@ -548,10 +564,10 @@ public class GpsBeaconManager {
                     lm.sendExtraCommand(LocationManager.GPS_PROVIDER, "force_time_injection", null);
                     lm.sendExtraCommand(LocationManager.GPS_PROVIDER, "force_xtra_injection", null);
                 } catch (Exception ignored) {}
-                lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, listener, Looper.getMainLooper());
+                lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 3000L, 0f, listener, Looper.getMainLooper());
             }
             if (netEnabled) {
-                lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000L, 0f, listener, Looper.getMainLooper());
+                lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 3000L, 0f, listener, Looper.getMainLooper());
             }
         } catch (SecurityException se) {
             Log.w(TAG, "SecurityException requesting location updates: " + se.getMessage());
@@ -581,10 +597,8 @@ public class GpsBeaconManager {
             }
         };
 
-        // If this device has no prior GPS fix (Cold Start without A-GPS on Android Go),
-        // give GPS up to 10 minutes of uninterrupted tracking to acquire ephemeris!
-        // As soon as onLocationChanged fires, cancelActiveFixListener() stops it immediately.
-        long timeoutMs = (mLastAccurateLocation == null) ? (10 * 60 * 1000L) : GPS_FIX_TIMEOUT_MS;
+        // Cap cold-start GPS tracking at 90s (with backoff on consecutive indoor failures) to avoid draining battery indoors
+        long timeoutMs = (mLastAccurateLocation == null) ? GPS_COLD_FIX_TIMEOUT_MS : GPS_FIX_TIMEOUT_MS;
         mMainHandler.postDelayed(mFixTimeoutRunnable, timeoutMs);
     }
 
@@ -640,7 +654,8 @@ public class GpsBeaconManager {
                 onLocationResolved(peerLoc.getLatitude(), peerLoc.getLongitude(), tag, false);
                 Log.i(TAG, "Applied peer location fallback on same network: " + peerLoc.getLatitude() + "," + peerLoc.getLongitude());
             } else {
-                Log.w(TAG, "No GPS fix or last known coordinates available; skipping beacon to avoid fake IP location.");
+                mConsecutiveColdFailures = Math.min(mConsecutiveColdFailures + 1, 3);
+                Log.w(TAG, "No GPS fix or last known coordinates available (coldFailures=" + mConsecutiveColdFailures + "); skipping beacon to avoid fake IP location.");
             }
         }
     }
@@ -1078,7 +1093,7 @@ public class GpsBeaconManager {
                 double lat = Double.parseDouble(coordMatcher.group(1));
                 double lon = Double.parseDouble(coordMatcher.group(2));
                 int battery = 0;
-                Matcher batMatcher = Pattern.compile("電量\\s*(\\d+)%").matcher(plainLine);
+                Matcher batMatcher = ROSTER_BATTERY_PATTERN.matcher(plainLine);
                 if (batMatcher.find()) {
                     battery = Integer.parseInt(batMatcher.group(1));
                 }
@@ -1138,22 +1153,28 @@ public class GpsBeaconManager {
         } catch (Exception ignored) {}
     }
 
-    private void persistPendingRecord(LocationRecord record) {
-        if (record == null) {
-            mPrefs.edit().remove(KEY_PENDING_OUTGOING).apply();
-        } else {
-            mPrefs.edit().putString(KEY_PENDING_OUTGOING, record.toJson().toString()).apply();
-        }
+    private void persistPendingRecord(final LocationRecord record) {
+        final String json = (record != null) ? record.toJson().toString() : null;
+        mExecutor.execute(() -> {
+            if (json == null) {
+                mPrefs.edit().remove(KEY_PENDING_OUTGOING).apply();
+            } else {
+                mPrefs.edit().putString(KEY_PENDING_OUTGOING, json).apply();
+            }
+        });
     }
 
     private void persistRosterMap() {
-        try {
-            JSONArray arr = new JSONArray();
-            for (LocationRecord rec : mRosterLocations.values()) {
-                arr.put(rec.toJson());
-            }
-            mPrefs.edit().putString(KEY_ROSTER_MAP, arr.toString()).apply();
-        } catch (Exception ignored) {}
+        final List<LocationRecord> snapshot = new ArrayList<>(mRosterLocations.values());
+        mExecutor.execute(() -> {
+            try {
+                JSONArray arr = new JSONArray();
+                for (LocationRecord rec : snapshot) {
+                    arr.put(rec.toJson());
+                }
+                mPrefs.edit().putString(KEY_ROSTER_MAP, arr.toString()).apply();
+            } catch (Exception ignored) {}
+        });
     }
 
     private String resolveSelfUserName() {
