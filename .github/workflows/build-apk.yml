@@ -78,7 +78,7 @@ jobs:
           path: dist/*.apk
           retention-days: 30
 
-      - name: Publish rolling dev-latest pre-release
+      - name: Publish rolling dev-latest release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -90,12 +90,11 @@ jobs:
           cp "$APK_FILE" dist/mumla-latest-debug.apk
           COMMIT_MSG=$(git log -1 --pretty=%B | head -n 1)
           NOTES="Auto-built from \`${GITHUB_SHA::7}\`: ${COMMIT_MSG}"
-          if gh release view dev-latest >/dev/null 2>&1; then
-            gh release upload dev-latest dist/mumla-latest-debug.apk --clobber
-            gh release edit dev-latest --title "Dev Latest (${GITHUB_SHA::7})" --notes "$NOTES" --prerelease
-          else
-            gh release create dev-latest dist/mumla-latest-debug.apk \
-              --title "Dev Latest (${GITHUB_SHA::7})" \
-              --notes "$NOTES" \
-              --prerelease
-          fi
+          # Recreate release & move dev-latest tag so GitHub refreshes published_at and shows the Latest badge
+          gh release delete dev-latest --yes || true
+          git tag -f dev-latest "$GITHUB_SHA"
+          git push -f origin refs/tags/dev-latest
+          gh release create dev-latest dist/mumla-latest-debug.apk \
+            --title "Dev Latest (${GITHUB_SHA::7})" \
+            --notes "$NOTES" \
+            --latest
