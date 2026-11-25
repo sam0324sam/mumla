@@ -12,6 +12,18 @@ import se.lublin.mumla.util.AppUpdaterManager;
 import se.lublin.mumla.util.RemoteLogUploader;
 
 public class GeneralSettingsFragment extends MumlaPreferenceFragment {
+    private Preference mCheckUpdatePref;
+    private final AppUpdaterManager.UpdateListener mUpdateListener = (state, statusMessage) -> {
+        if (!isAdded() || mCheckUpdatePref == null) {
+            return;
+        }
+        if (state == AppUpdaterManager.State.IDLE || statusMessage.isEmpty()) {
+            mCheckUpdatePref.setSummary(getDefaultUpdateSummary());
+        } else {
+            mCheckUpdatePref.setSummary(statusMessage);
+        }
+    };
+
     @Override
     public void onCreatePreferences(Bundle savedInstanceState, String rootKey) {
         setPreferencesFromResource(R.xml.settings_general, rootKey);
@@ -29,16 +41,11 @@ public class GeneralSettingsFragment extends MumlaPreferenceFragment {
             });
         }
 
-        Preference checkUpdatePref = findPreference("action_check_update_now");
-        if (checkUpdatePref != null) {
-            checkUpdatePref.setSummary(getString(R.string.pref_check_update_now_sum)
-                    + " (" + BuildConfig.GIT_SHA + ")");
-            checkUpdatePref.setOnPreferenceClickListener(preference -> {
-                AppUpdaterManager.checkAndDownloadUpdate(requireContext(), true, message -> {
-                    if (isAdded()) {
-                        Toast.makeText(requireContext(), message, Toast.LENGTH_LONG).show();
-                    }
-                });
+        mCheckUpdatePref = findPreference("action_check_update_now");
+        if (mCheckUpdatePref != null) {
+            mCheckUpdatePref.setSummary(getDefaultUpdateSummary());
+            mCheckUpdatePref.setOnPreferenceClickListener(preference -> {
+                AppUpdaterManager.checkAndDownloadUpdate(requireContext(), true, null);
                 return true;
             });
         }
@@ -58,5 +65,27 @@ public class GeneralSettingsFragment extends MumlaPreferenceFragment {
                 return true;
             });
         }
+    }
+
+    @Override
+    public void onStart() {
+        super.onStart();
+        AppUpdaterManager.addListener(mUpdateListener);
+    }
+
+    @Override
+    public void onStop() {
+        AppUpdaterManager.removeListener(mUpdateListener);
+        super.onStop();
+    }
+
+    @Override
+    public void onDestroyView() {
+        mCheckUpdatePref = null;
+        super.onDestroyView();
+    }
+
+    private String getDefaultUpdateSummary() {
+        return getString(R.string.pref_check_update_now_sum) + " (" + BuildConfig.GIT_SHA + ")";
     }
 }

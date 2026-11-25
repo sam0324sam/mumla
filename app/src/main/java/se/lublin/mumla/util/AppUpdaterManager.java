@@ -23,6 +23,8 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
+import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -41,19 +43,47 @@ public final class AppUpdaterManager {
     private static final int READ_TIMEOUT_MS = 60_000;
     private static final long MIN_VALID_APK_BYTES = 1_000_000L;
     private static final long AUTO_CHECK_DELAY_MS = 20_000L;
+    private static final long PROGRESS_NOTIFY_INTERVAL_MS = 350L;
     // Allow 5 minutes skew between local build timestamp and GitHub release published_at
     private static final long PUBLISH_TIME_SKEW_MS = 5 * 60 * 1000L;
 
-    private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
-    private static final Handler MAIN_HANDLER = new Handler(Looper.getMainLooper());
-    private static final AtomicBoolean sChecking = new AtomicBoolean(false);
-    private static boolean sStartupScheduled = false;
+    public enum State {
+        IDLE,
+        CHECKING,
+        DOWNLOADING,
+        VERIFYING
+    }
 
     public interface UpdateCallback {
         void onStatus(@NonNull String message);
     }
 
+    public interface UpdateListener {
+        void onStateChanged(@NonNull State state, @NonNull String statusMessage);
+    }
+
+    private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
+    private static final Handler MAIN_HANDLER = new Handler(Looper.getMainLooper());
+    private static final AtomicBoolean sChecking = new AtomicBoolean(false);
+    private static final CopyOnWriteArraySet<UpdateListener> sListeners = new CopyOnWriteArraySet<>();
+    private static volatile State sState = State.IDLE;
+    private static volatile String sCurrentStatus = "";
+    private static boolean sStartupScheduled = false;
+    @Nullable
+    private static Toast sActiveToast = null;
+
     private AppUpdaterManager() {
+    }
+
+    public static void addListener(@NonNull UpdateListener listener) {
+        sListeners.add(listener);
+        final State snapshotState = sState;
+        final String snapshotStatus = sCurrentStatus;
+        MAIN_HANDLER.post(() -> listener.onStateChanged(snapshotState, snapshotStatus));
+    }
+
+    public static void removeListener(@NonNull UpdateListener listener) {
+        sListeners.remove(listener);
     }
 
     /**
@@ -90,10 +120,15 @@ public final class AppUpdaterManager {
             return;
         }
         if (!sChecking.compareAndSet(false, true)) {
-            notifyUser(appCtx, manualTrigger, callback, "正在檢查更新中…");
+            String activeStatus = sCurrentStatus;
+            if (activeStatus.isEmpty()) {
+                activeStatus = "正在檢查更新中…";
+            }
+            notifyUser(appCtx, manualTrigger, callback, activeStatus);
             return;
         }
 
+        updateState(State.CHECKING, "正在檢查新版本…");
         if (manualTrigger) {
             notifyUser(appCtx, true, callback, "正在檢查新版本…");
         }
@@ -121,9 +156,11 @@ public final class AppUpdaterManager {
                 }
 
                 Log.i(TAG, "New update found: local=" + BuildConfig.GIT_SHA + " -> remote=" + remoteSha);
-                notifyUser(appCtx, true, callback, "發現新版 (" + remoteSha + ")，下載中…");
+                String startDownloadMsg = "發現新版 (" + remoteSha + ")，開始下載…";
+                updateState(State.DOWNLOADING, startDownloadMsg);
+                notifyUser(appCtx, true, callback, startDownloadMsg);
 
-                File apkFile = downloadApk(appCtx, base + "/latest.apk");
+                File apkFile = downloadApk(appCtx, base + "/latest.apk", remoteSha);
                 if (apkFile == null) {
                     notifyUser(appCtx, true, callback, "APK 下載或驗證失敗");
                     return;
@@ -135,6 +172,7 @@ public final class AppUpdaterManager {
                 notifyUser(appCtx, manualTrigger, callback, "檢查更新失敗: " + e.getMessage());
             } finally {
                 sChecking.set(false);
+                updateState(State.IDLE, "");
             }
         });
     }
@@ -165,7 +203,9 @@ public final class AppUpdaterManager {
     }
 
     @Nullable
-    private static File downloadApk(@NonNull Context context, @NonNull String apkUrl) throws Exception {
+    private static File downloadApk(@NonNull Context context,
+                                    @NonNull String apkUrl,
+                                    @NonNull String remoteSha) throws Exception {
         File cacheBase = context.getExternalCacheDir();
         if (cacheBase == null) {
             cacheBase = context.getCacheDir();
@@ -192,7 +232,9 @@ public final class AppUpdaterManager {
                 throw new IllegalStateException("APK HTTP " + code);
             }
 
+            long contentLength = parseContentLength(conn);
             long total = 0;
+            long lastNotifyMs = 0L;
             byte[] header = new byte[2];
             int headerRead = 0;
             try (InputStream is = conn.getInputStream();
@@ -207,9 +249,18 @@ public final class AppUpdaterManager {
                     }
                     fos.write(buf, 0, n);
                     total += n;
+
+                    long now = System.currentTimeMillis();
+                    if (now - lastNotifyMs >= PROGRESS_NOTIFY_INTERVAL_MS) {
+                        lastNotifyMs = now;
+                        updateState(State.DOWNLOADING,
+                                formatDownloadProgress(remoteSha, total, contentLength));
+                    }
                 }
                 fos.flush();
             }
+
+            updateState(State.VERIFYING, "正在驗證安裝檔…");
 
             // Basic integrity check: APK must be a ZIP ("PK") and >= 1 MB
             if (total < MIN_VALID_APK_BYTES || header[0] != 'P' || header[1] != 'K') {
@@ -232,6 +283,31 @@ public final class AppUpdaterManager {
         }
     }
 
+    private static long parseContentLength(@NonNull HttpURLConnection conn) {
+        String header = conn.getHeaderField("Content-Length");
+        if (header == null || header.trim().isEmpty()) {
+            return -1L;
+        }
+        try {
+            return Long.parseLong(header.trim());
+        } catch (NumberFormatException ignored) {
+            return -1L;
+        }
+    }
+
+    private static String formatDownloadProgress(@NonNull String remoteSha,
+                                                 long downloadedBytes,
+                                                 long totalBytes) {
+        double downloadedMb = downloadedBytes / (1024.0 * 1024.0);
+        if (totalBytes > 0) {
+            int percent = (int) Math.min(100L, (downloadedBytes * 100L) / totalBytes);
+            double totalMb = totalBytes / (1024.0 * 1024.0);
+            return String.format(Locale.US, "下載新版 (%s) %d%% (%.1f/%.1f MB)",
+                    remoteSha, percent, downloadedMb, totalMb);
+        }
+        return String.format(Locale.US, "下載新版 (%s) %.1f MB…", remoteSha, downloadedMb);
+    }
+
     private static void launchInstaller(@NonNull Context context,
                                         @NonNull File apkFile,
                                         @Nullable UpdateCallback callback) {
@@ -251,8 +327,18 @@ public final class AppUpdaterManager {
             }
         } catch (Exception e) {
             Log.e(TAG, "Failed to launch APK installer", e);
-            Toast.makeText(context, "無法開啟安裝器: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            showSingleToast(context, "無法開啟安裝器: " + e.getMessage(), Toast.LENGTH_LONG);
         }
+    }
+
+    private static void updateState(@NonNull State state, @NonNull String statusMessage) {
+        sState = state;
+        sCurrentStatus = statusMessage;
+        MAIN_HANDLER.post(() -> {
+            for (UpdateListener listener : sListeners) {
+                listener.onStateChanged(state, statusMessage);
+            }
+        });
     }
 
     private static String trimTrailingSlash(String url) {
@@ -271,8 +357,16 @@ public final class AppUpdaterManager {
             if (callback != null) {
                 callback.onStatus(msg);
             } else if (showToast) {
-                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show();
+                showSingleToast(context, msg, Toast.LENGTH_SHORT);
             }
         });
+    }
+
+    private static void showSingleToast(@NonNull Context context, @NonNull String msg, int duration) {
+        if (sActiveToast != null) {
+            sActiveToast.cancel();
+        }
+        sActiveToast = Toast.makeText(context, msg, duration);
+        sActiveToast.show();
     }
 }
