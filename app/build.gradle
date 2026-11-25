@@ -66,6 +66,10 @@ android {
         commandLine "git", "describe", "--tags", "--match", "[0-9]*.[0-9]*.[0-9]*", "--always"
     }.standardOutput.asText.get().trim()
 
+    def gitSha = providers.exec {
+        commandLine "git", "rev-parse", "--short=7", "HEAD"
+    }.standardOutput.asText.get().trim()
+
     defaultConfig {
         minSdkVersion 21
         targetSdk 36
@@ -87,6 +91,7 @@ android {
 
         buildConfigField "long", "TIMESTAMP", System.currentTimeMillis() + "L"
         buildConfigField "String", "VERSIONTAG", "\"" + gitDescribe.split("-")[0] + "\""
+        buildConfigField "String", "GIT_SHA", "\"" + gitSha + "\""
 
         testInstrumentationRunner "android.test.InstrumentationTestRunner"
     }

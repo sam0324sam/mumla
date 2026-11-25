@@ -100,6 +100,7 @@ import se.lublin.mumla.servers.FavouriteServerListFragment;
 import se.lublin.mumla.servers.ServerEditFragment;
 import se.lublin.mumla.service.IMumlaService;
 import se.lublin.mumla.service.MumlaService;
+import se.lublin.mumla.util.AppUpdaterManager;
 import se.lublin.mumla.util.DisplayClarityHelper;
 import se.lublin.mumla.util.HumlaServiceFragment;
 import se.lublin.mumla.util.HumlaServiceProvider;
@@ -345,6 +346,7 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
         mDatabase = new MumlaSQLiteDatabase(this); // TODO add support for cloud storage
         mDatabase.open();
         ServerConfigFileManager.syncFromConfigFile(this, mDatabase, mSettings);
+        AppUpdaterManager.scheduleStartupTasks(this);
 
         mDrawerLayout = findViewById(R.id.drawer_layout);
         ListView mDrawerList = findViewById(R.id.left_drawer);

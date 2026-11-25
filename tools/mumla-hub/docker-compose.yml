@@ -1,0 +1,11 @@
+services:
+  mumla-hub:
+    build: .
+    container_name: mumla-hub
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data

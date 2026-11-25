@@ -199,4 +199,15 @@
     <string name="low_res_clarity_auto">自動（低解析度對講機自動啟用）</string>
     <string name="low_res_clarity_on">強制開啟（像素字體＋高對比）</string>
     <string name="low_res_clarity_off">關閉</string>
+    <string name="pref_remote_ops_title">遠端更新與除錯（NAS 中繼）</string>
+    <string name="pref_upload_debug_log">立即上傳除錯日誌</string>
+    <string name="pref_upload_debug_log_sum">將近期 logcat 上傳至 NAS（自動同步至私有 GitHub 倉）。</string>
+    <string name="pref_uploading_log">正在上傳除錯日誌…</string>
+    <string name="pref_check_update_now">立即檢查更新</string>
+    <string name="pref_check_update_now_sum">透過 NAS 中繼檢查最新 APK 版本</string>
+    <string name="pref_auto_check_update">開機自動檢查更新</string>
+    <string name="pref_auto_check_update_sum">啟動連網後自動檢查新版 APK 並提示安裝。</string>
+    <string name="pref_hub_url">NAS 中繼網址</string>
+    <string name="pref_hub_token">NAS 驗證密鑰</string>
+    <string name="pref_hub_token_sum">上傳日誌用密鑰（可透過 mumla_config.json 自動載入）。</string>
 </resources>

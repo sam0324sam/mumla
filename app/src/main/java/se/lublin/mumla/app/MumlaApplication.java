@@ -13,10 +13,13 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatDelegate;
 import androidx.preference.PreferenceManager;
 
+import se.lublin.mumla.util.CrashLogHandler;
+
 public class MumlaApplication extends Application implements SharedPreferences.OnSharedPreferenceChangeListener {
     @Override
     public void onCreate() {
         super.onCreate();
+        CrashLogHandler.install(this);
         SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(this);
         applyTheme(preferences);
         applyLanguage(preferences);

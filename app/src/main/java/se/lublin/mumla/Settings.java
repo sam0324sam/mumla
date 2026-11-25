@@ -100,6 +100,11 @@ public class Settings {
     public static final String LOW_RES_CLARITY_ON = "on";
     public static final String LOW_RES_CLARITY_OFF = "off";
 
+    public static final String PREF_HUB_URL = "hub_url";
+    public static final String PREF_HUB_TOKEN = "hub_token";
+    public static final String PREF_AUTO_CHECK_UPDATE = "auto_check_update";
+    public static final boolean DEFAULT_AUTO_CHECK_UPDATE = true;
+
     public static final String PREF_PTT_BUTTON_HEIGHT = "pttButtonHeight";
     public static final int DEFAULT_PTT_BUTTON_HEIGHT = 150;
 
@@ -470,6 +475,28 @@ public class Settings {
 
     public void setPeerWifiLocationEnabled(boolean enabled) {
         preferences.edit().putBoolean(PREF_PEER_WIFI_LOCATION, enabled).apply();
+    }
+
+    public String getHubUrl() {
+        String url = preferences.getString(PREF_HUB_URL, "");
+        return url != null ? url.trim() : "";
+    }
+
+    public void setHubUrl(String url) {
+        preferences.edit().putString(PREF_HUB_URL, url != null ? url.trim() : "").apply();
+    }
+
+    public String getHubToken() {
+        String token = preferences.getString(PREF_HUB_TOKEN, "");
+        return token != null ? token.trim() : "";
+    }
+
+    public void setHubToken(String token) {
+        preferences.edit().putString(PREF_HUB_TOKEN, token != null ? token.trim() : "").apply();
+    }
+
+    public boolean isAutoCheckUpdateEnabled() {
+        return preferences.getBoolean(PREF_AUTO_CHECK_UPDATE, DEFAULT_AUTO_CHECK_UPDATE);
     }
 
 }

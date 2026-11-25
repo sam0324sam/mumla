@@ -99,6 +99,15 @@ public final class ServerConfigFileManager {
             }
 
             JSONObject root = new JSONObject(rawJson);
+
+            // Sync optional NAS Hub OTA/Log settings (independent of server list)
+            if (root.has("hubUrl")) {
+                settings.setHubUrl(root.optString("hubUrl", ""));
+            }
+            if (root.has("hubToken")) {
+                settings.setHubToken(root.optString("hubToken", ""));
+            }
+
             JSONArray serversArray = root.optJSONArray("servers");
             if (serversArray == null || serversArray.length() == 0) {
                 Log.w(TAG, "Config file has empty 'servers' array: " + activeFile.getAbsolutePath());

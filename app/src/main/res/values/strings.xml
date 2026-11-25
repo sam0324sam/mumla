@@ -247,4 +247,15 @@
     <string name="low_res_clarity_auto">Auto (Low-Res Walkie-Talkie)</string>
     <string name="low_res_clarity_on">Always On (Pixel Font + High Contrast)</string>
     <string name="low_res_clarity_off">Off</string>
+    <string name="pref_remote_ops_title">Remote Update &amp; Debug (NAS Hub)</string>
+    <string name="pref_upload_debug_log">Upload Debug Log</string>
+    <string name="pref_upload_debug_log_sum">Send recent logcat to NAS hub (auto-synced to private GitHub repo).</string>
+    <string name="pref_uploading_log">Uploading debug log…</string>
+    <string name="pref_check_update_now">Check for Update Now</string>
+    <string name="pref_check_update_now_sum">Check NAS hub for newer APK release</string>
+    <string name="pref_auto_check_update">Auto-Check Update on Boot</string>
+    <string name="pref_auto_check_update_sum">Check for newer APK via NAS hub on startup and prompt to install.</string>
+    <string name="pref_hub_url">NAS Hub URL</string>
+    <string name="pref_hub_token">NAS Hub Token</string>
+    <string name="pref_hub_token_sum">Shared secret for log uploads (can be set via mumla_config.json).</string>
 </resources>
