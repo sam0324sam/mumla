@@ -38,27 +38,17 @@ import android.widget.Toast;
 import androidx.preference.PreferenceManager;
 
 import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Calendar;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
 
 import android.content.Context;
-import android.media.AudioAttributes;
-import android.media.AudioFormat;
-import android.media.AudioTrack;
 import se.lublin.mumla.app.PocketLockActivity;
 
 import se.lublin.humla.Constants;
@@ -76,6 +66,7 @@ import se.lublin.mumla.Settings;
 import se.lublin.mumla.service.ipc.TalkBroadcastReceiver;
 import se.lublin.mumla.util.HtmlUtils;
 import se.lublin.mumla.util.PttSoundManager;
+import se.lublin.mumla.util.VoiceAnnouncementPlayer;
 
 /**
  * An extension of the Humla service with some added Mumla-exclusive non-standard Mumble features.
@@ -175,28 +166,12 @@ public class MumlaService extends HumlaService implements
     private long mLastBusyToastTime = 0;
     private volatile long mLastLocalSoundEndTime = 0;
 
-    public void markLocalSoundPlaying(long durationMs) {
-        mLastLocalSoundEndTime = SystemClock.elapsedRealtime() + durationMs;
+    public synchronized void markLocalSoundPlaying(long durationMs) {
+        long end = SystemClock.elapsedRealtime() + durationMs;
+        if (end > mLastLocalSoundEndTime) {
+            mLastLocalSoundEndTime = end;
+        }
     }
-
-    // Pre-resolved compile-time resource tables (eliminates slow getResources().getIdentifier() lookups)
-    private static final int[] HOUR_RES_IDS = {
-        R.raw.hour_1, R.raw.hour_2, R.raw.hour_3, R.raw.hour_4,
-        R.raw.hour_5, R.raw.hour_6, R.raw.hour_7, R.raw.hour_8,
-        R.raw.hour_9, R.raw.hour_10, R.raw.hour_11, R.raw.hour_12
-    };
-    private static final int[] MIN_RES_IDS = {
-        R.raw.min_0,  R.raw.min_1,  R.raw.min_2,  R.raw.min_3,  R.raw.min_4,  R.raw.min_5,
-        R.raw.min_6,  R.raw.min_7,  R.raw.min_8,  R.raw.min_9,  R.raw.min_10, R.raw.min_11,
-        R.raw.min_12, R.raw.min_13, R.raw.min_14, R.raw.min_15, R.raw.min_16, R.raw.min_17,
-        R.raw.min_18, R.raw.min_19, R.raw.min_20, R.raw.min_21, R.raw.min_22, R.raw.min_23,
-        R.raw.min_24, R.raw.min_25, R.raw.min_26, R.raw.min_27, R.raw.min_28, R.raw.min_29,
-        R.raw.min_30, R.raw.min_31, R.raw.min_32, R.raw.min_33, R.raw.min_34, R.raw.min_35,
-        R.raw.min_36, R.raw.min_37, R.raw.min_38, R.raw.min_39, R.raw.min_40, R.raw.min_41,
-        R.raw.min_42, R.raw.min_43, R.raw.min_44, R.raw.min_45, R.raw.min_46, R.raw.min_47,
-        R.raw.min_48, R.raw.min_49, R.raw.min_50, R.raw.min_51, R.raw.min_52, R.raw.min_53,
-        R.raw.min_54, R.raw.min_55, R.raw.min_56, R.raw.min_57, R.raw.min_58, R.raw.min_59
-    };
 
     // High-speed cached ALSA playback status nodes (zero-allocation scan + Move-to-Front)
     private static final Set<String> PREFERRED_ALSA_PCM_NODES = new HashSet<>(Arrays.asList(
@@ -206,13 +181,10 @@ public class MumlaService extends HumlaService implements
     private String[] mAlsaPlaybackPaths = new String[0];
     private final byte[] mAlsaReadBuf = new byte[32];
 
-    // Time & battery voice announcements (in-memory 16kHz AudioTrack on dedicated worker; zero Flash wear)
-    private static final int VOICE_SAMPLE_RATE = 16000;
-    private volatile long mLastTimeAnnounceTimestamp = 0;
-    private ScheduledExecutorService mVoiceExecutor;
-    private AudioTrack mActiveVoiceTrack;
-    private ScheduledFuture<?> mVoiceReleaseFuture;
-    private PowerManager.WakeLock mVoiceWakeLock;
+    // Dedicated in-memory WAV player for time & battery voice announcements
+    private VoiceAnnouncementPlayer mVoiceAnnouncementPlayer;
+    // Short CPU wakelock for lock tone playback while screen turns off
+    private PowerManager.WakeLock mToneWakeLock;
 
     // Battery & voltage monitor (unplug settle window, TX-sag debounce, PTT deferral)
     private BatteryMonitor mBatteryMonitor;
@@ -480,18 +452,14 @@ public class MumlaService extends HumlaService implements
         // TTS is lazily initialized only when an actual non-GPS chat message needs to be spoken
         mTTS = null;
 
-        // Initialize zero-latency PTT sound synthesizer & cached ALSA playback paths
-        mPttSoundManager = new PttSoundManager();
-        mVoiceExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "MumlaVoiceWorker");
-            t.setDaemon(true);
-            return t;
-        });
+        // Initialize zero-latency PTT sound synthesizer, voice announcement player & cached ALSA paths
+        mPttSoundManager = new PttSoundManager(this::markLocalSoundPlaying);
+        mVoiceAnnouncementPlayer = new VoiceAnnouncementPlayer(this, this::markLocalSoundPlaying);
         try {
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
             if (pm != null) {
-                mVoiceWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Mumla:VoiceAnnounce");
-                mVoiceWakeLock.setReferenceCounted(false);
+                mToneWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Mumla:TonePlayback");
+                mToneWakeLock.setReferenceCounted(false);
             }
         } catch (Exception ignored) {}
         initAlsaPlaybackPaths();
@@ -563,12 +531,11 @@ public class MumlaService extends HumlaService implements
         if (mUiHandler != null) {
             mUiHandler.removeCallbacksAndMessages(null);
         }
-        releaseActiveVoiceTrack();
-        if (mVoiceExecutor != null) {
-            mVoiceExecutor.shutdownNow();
-            mVoiceExecutor = null;
+        if (mVoiceAnnouncementPlayer != null) {
+            mVoiceAnnouncementPlayer.release();
+            mVoiceAnnouncementPlayer = null;
         }
-        releaseVoiceWakeLock();
+        releaseToneWakeLock();
         if (sInstance == this) {
             sInstance = null;
         }
@@ -1031,7 +998,6 @@ public class MumlaService extends HumlaService implements
         // 1. Connection check: if not established or synchronized, reject with busy/reject tone
         if (!isConnectionEstablished() || !isSynchronized()) {
             Log.w(TAG, "PTT rejected: Client not connected or not synchronized yet");
-            markLocalSoundPlaying(250);
             if (mPttSoundManager != null) {
                 mPttSoundManager.playBusyTone();
             }
@@ -1042,7 +1008,6 @@ public class MumlaService extends HumlaService implements
         // 2. Strict Exclusive Floor Control (搶MIC機制): prevent interrupting active incoming voice
         if (isFloorBusy()) {
             Log.w(TAG, "PTT rejected: Channel is busy with active speaker");
-            markLocalSoundPlaying(250);
             if (mPttSoundManager != null) {
                 mPttSoundManager.playBusyTone();
             }
@@ -1052,8 +1017,15 @@ public class MumlaService extends HumlaService implements
 
         // 3. Grant talk permit
         if (!isTalking()) {
+            // Stop any active local voice announcement or lingering static tone BEFORE
+            // starting hardware mic capture, which triggers Qualcomm HAL stream invalidation.
+            if (mVoiceAnnouncementPlayer != null) {
+                mVoiceAnnouncementPlayer.stop();
+            }
+            if (mPttSoundManager != null) {
+                mPttSoundManager.stopAllActiveTones();
+            }
             setTalkingState(true);
-            markLocalSoundPlaying(180);
             if (mPttSoundManager != null) {
                 mPttSoundManager.playPermitTone();
             }
@@ -1073,7 +1045,6 @@ public class MumlaService extends HumlaService implements
         mUiHandler.removeCallbacks(mTotRunnable);
         if (isTalking()) {
             setTalkingState(false);
-            markLocalSoundPlaying(100);
             if (mPttSoundManager != null) {
                 mPttSoundManager.playReleaseTone();
             }
@@ -1146,14 +1117,12 @@ public class MumlaService extends HumlaService implements
     // =========================================================================
 
     private void playTotWarningTone() {
-        markLocalSoundPlaying(500);
         if (mPttSoundManager != null) {
             mPttSoundManager.playTotWarningTone();
         }
     }
 
     public void playPocketUnlockAckTone() {
-        markLocalSoundPlaying(400);
         if (mPttSoundManager != null) {
             mPttSoundManager.playUnlockAckTone();
         }
@@ -1164,8 +1133,7 @@ public class MumlaService extends HumlaService implements
             return;
         }
         Log.i(TAG, "F4 / Volume-Down Long Press -> Triggering Pocket Lock Mode");
-        markLocalSoundPlaying(600);
-        acquireVoiceWakeLock(800);
+        acquireToneWakeLock(800);
 
         if (mPttSoundManager != null) {
             mPttSoundManager.playLockTone();
@@ -1250,8 +1218,8 @@ public class MumlaService extends HumlaService implements
         }
     }
 
-    private void acquireVoiceWakeLock(long timeoutMs) {
-        PowerManager.WakeLock wl = mVoiceWakeLock;
+    private void acquireToneWakeLock(long timeoutMs) {
+        PowerManager.WakeLock wl = mToneWakeLock;
         if (wl != null) {
             try {
                 wl.acquire(timeoutMs);
@@ -1259,8 +1227,8 @@ public class MumlaService extends HumlaService implements
         }
     }
 
-    private void releaseVoiceWakeLock() {
-        PowerManager.WakeLock wl = mVoiceWakeLock;
+    private void releaseToneWakeLock() {
+        PowerManager.WakeLock wl = mToneWakeLock;
         if (wl != null) {
             try {
                 if (wl.isHeld()) {
@@ -1270,153 +1238,9 @@ public class MumlaService extends HumlaService implements
         }
     }
 
-    private synchronized void releaseActiveVoiceTrack() {
-        if (mVoiceReleaseFuture != null) {
-            mVoiceReleaseFuture.cancel(false);
-            mVoiceReleaseFuture = null;
-        }
-        if (mActiveVoiceTrack != null) {
-            try { mActiveVoiceTrack.stop(); } catch (Exception ignored) {}
-            try { mActiveVoiceTrack.release(); } catch (Exception ignored) {}
-            mActiveVoiceTrack = null;
-        }
-    }
-
     public void announceCurrentTime() {
-        if (isTalking()) {
-            Log.d(TAG, "Ignore time announcement because PTT is active");
-            return;
-        }
-
-        long now = SystemClock.elapsedRealtime();
-        if (now - mLastTimeAnnounceTimestamp < 3000) {
-            Log.d(TAG, "Ignore time announcement within debounce window (" + (now - mLastTimeAnnounceTimestamp) + "ms)");
-            return;
-        }
-        mLastTimeAnnounceTimestamp = now;
-
-        Calendar cal = Calendar.getInstance();
-        int hour24 = cal.get(Calendar.HOUR_OF_DAY);
-        int minute = cal.get(Calendar.MINUTE);
-        int hour12 = hour24 % 12;
-        if (hour12 == 0) {
-            hour12 = 12;
-        }
-
-        final int hourResId = HOUR_RES_IDS[hour12 - 1];
-        final int minResId = (minute >= 0 && minute < MIN_RES_IDS.length) ? MIN_RES_IDS[minute] : MIN_RES_IDS[0];
-        Log.i(TAG, "Announcing concise time: 24h=" + hour24 + " -> " + hour12 + "點 " + minute + "分");
-
-        ScheduledExecutorService executor = mVoiceExecutor;
-        if (executor != null && !executor.isShutdown()) {
-            acquireVoiceWakeLock(3500);
-            executor.execute(() -> playRawWavResourcesInMemory(new int[]{ hourResId, minResId }, 0.25f));
-        }
-    }
-
-    /**
-     * Extracts raw PCM from 22050Hz 16-bit Mono WAV resources and plays directly from RAM via AudioTrack.
-     * Eliminates Flash disk writes (cache WAV) and MediaPlayer IPC/prepare latency (~150ms -> <20ms).
-     */
-    private void playRawWavResourcesInMemory(int[] resIds, float volume) {
-        try {
-            ByteArrayOutputStream pcmStream = new ByteArrayOutputStream(65536);
-            byte[] buf = new byte[4096];
-
-            for (int resId : resIds) {
-                ByteArrayOutputStream rawStream = new ByteArrayOutputStream(32768);
-                try (InputStream is = getResources().openRawResource(resId)) {
-                    int read;
-                    while ((read = is.read(buf)) != -1) {
-                        rawStream.write(buf, 0, read);
-                    }
-                }
-                appendPcmData(rawStream.toByteArray(), pcmStream);
-            }
-
-            byte[] allPcm = pcmStream.toByteArray();
-            if (allPcm.length == 0) {
-                releaseVoiceWakeLock();
-                return;
-            }
-
-            // 22050 Hz * 2 bytes/sample = 44100 bytes/sec
-            long durationMs = Math.max(200L, (allPcm.length * 1000L) / (VOICE_SAMPLE_RATE * 2L));
-            markLocalSoundPlaying(durationMs + 350L);
-            acquireVoiceWakeLock(durationMs + 500L);
-
-            AudioTrack track;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                track = new AudioTrack(
-                        new AudioAttributes.Builder()
-                                .setUsage(AudioAttributes.USAGE_MEDIA)
-                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                                .build(),
-                        new AudioFormat.Builder()
-                                .setSampleRate(VOICE_SAMPLE_RATE)
-                                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                                .build(),
-                        allPcm.length,
-                        AudioTrack.MODE_STATIC,
-                        AudioManager.AUDIO_SESSION_ID_GENERATE
-                );
-                track.setVolume(volume);
-            } else {
-                track = new AudioTrack(
-                        AudioManager.STREAM_MUSIC,
-                        VOICE_SAMPLE_RATE,
-                        AudioFormat.CHANNEL_OUT_MONO,
-                        AudioFormat.ENCODING_PCM_16BIT,
-                        allPcm.length,
-                        AudioTrack.MODE_STATIC
-                );
-                track.setStereoVolume(volume, volume);
-            }
-
-            track.write(allPcm, 0, allPcm.length);
-
-            synchronized (this) {
-                releaseActiveVoiceTrack();
-                mActiveVoiceTrack = track;
-                track.play();
-
-                ScheduledExecutorService executor = mVoiceExecutor;
-                if (executor != null && !executor.isShutdown()) {
-                    final AudioTrack launchedTrack = track;
-                    mVoiceReleaseFuture = executor.schedule(() -> {
-                        synchronized (MumlaService.this) {
-                            if (mActiveVoiceTrack == launchedTrack) {
-                                try { launchedTrack.stop(); } catch (Exception ignored) {}
-                                try { launchedTrack.release(); } catch (Exception ignored) {}
-                                mActiveVoiceTrack = null;
-                                mVoiceReleaseFuture = null;
-                                releaseVoiceWakeLock();
-                            }
-                        }
-                    }, durationMs + 300L, TimeUnit.MILLISECONDS);
-                }
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Error playing in-memory voice AudioTrack: " + e.getMessage(), e);
-            releaseVoiceWakeLock();
-        }
-    }
-
-    private void appendPcmData(byte[] rawWav, ByteArrayOutputStream out) {
-        for (int i = 12; i < rawWav.length - 8; i++) {
-            if (rawWav[i] == 0x64 && rawWav[i + 1] == 0x61 && rawWav[i + 2] == 0x74 && rawWav[i + 3] == 0x61) {
-                int dataSize = (rawWav[i + 4] & 0xFF) |
-                               ((rawWav[i + 5] & 0xFF) << 8) |
-                               ((rawWav[i + 6] & 0xFF) << 16) |
-                               ((rawWav[i + 7] & 0xFF) << 24);
-                int start = i + 8;
-                int len = Math.min(dataSize, rawWav.length - start);
-                if (len > 0) {
-                    out.write(rawWav, start, len);
-                }
-                return;
-            }
+        if (mVoiceAnnouncementPlayer != null) {
+            mVoiceAnnouncementPlayer.announceCurrentTime(isTalking());
         }
     }
 
@@ -1448,11 +1272,8 @@ public class MumlaService extends HumlaService implements
     }
 
     private void playBatteryVoice(final int resId) {
-        if (resId == 0) return;
-        ScheduledExecutorService executor = mVoiceExecutor;
-        if (executor != null && !executor.isShutdown()) {
-            acquireVoiceWakeLock(3500);
-            executor.execute(() -> playRawWavResourcesInMemory(new int[]{ resId }, 0.20f));
+        if (mVoiceAnnouncementPlayer != null) {
+            mVoiceAnnouncementPlayer.playBatteryVoice(resId);
         }
     }
 }

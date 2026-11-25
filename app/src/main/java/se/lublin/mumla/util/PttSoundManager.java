@@ -5,17 +5,42 @@ import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 /**
  * High-performance, zero-latency PCM sound synthesizer for PTT operations.
  * Keeps only the 3 hot-path PTT tracks (Permit/Busy/Release) resident in AudioFlinger
  * and synthesizes infrequent auxiliary tones (Lock/Unlock/TOT) on demand via a single shared track.
+ *
+ * Lifecycle guarantee:
+ * Every MODE_STATIC AudioTrack is automatically transitioned back to PLAYSTATE_STOPPED (or released
+ * for auxiliary tones) once its PCM duration completes. This prevents Qualcomm AudioPolicyManagerCustom
+ * stream invalidations (triggered on PTT startInput/stopInput) from causing Android's native
+ * AudioTrackThread::processAudioBuffer() to auto-recreate and replay stale static buffers from frame 0.
  */
 public class PttSoundManager {
     private static final String TAG = "PttSoundManager";
     // Match msm8909/msm8916 native 48kHz hardware backend to avoid 16kHz HAL direct-output fallback (-61)
     private static final int SAMPLE_RATE = 48000;
+
+    // Extra drain margin before transitioning a finished MODE_STATIC track to STOPPED/released
+    // (covers msm8909 deep-buffer-playback latency without clipping the tail).
+    private static final long TRACK_STOP_MARGIN_MS = 220L;
+    // Extra guard margin reported to local-sound ALSA floor-control suppression.
+    private static final long LOCAL_SOUND_GUARD_MARGIN_MS = 100L;
+
+    public interface LocalSoundListener {
+        void onLocalSoundStarted(long guardDurationMs);
+    }
+
+    private enum ResidentSlot {
+        PERMIT, BUSY, RELEASE
+    }
+
+    private final Handler mCleanupHandler = new Handler(Looper.getMainLooper());
+    private final LocalSoundListener mLocalSoundListener;
 
     // Hot-path resident tracks (zero-latency) and backing PCM buffers for auto-recovery after HAL invalidation
     private short[] mPermitSamples;
@@ -31,6 +56,13 @@ public class PttSoundManager {
     private short[] mTotWarningSamples;
     private AudioTrack mAuxTrack;
 
+    // Monotonic per-slot tokens prevent stale cleanup callbacks from stopping a newer playback
+    private long mPermitGen = 0;
+    private long mBusyGen = 0;
+    private long mReleaseGen = 0;
+    private long mAuxGen = 0;
+    private boolean mReleased = false;
+
     // Unified reference amplitude: 1/3 of previous 8000 permit tone (~8.2% of full-scale 32767)
     private static final int PERMIT_TONE_AMPLITUDE = 2700;
     private static final int BUSY_TONE_AMPLITUDE = 2700;
@@ -40,6 +72,11 @@ public class PttSoundManager {
     private static final int TOT_WARNING_AMPLITUDE = 2700;
 
     public PttSoundManager() {
+        this(null);
+    }
+
+    public PttSoundManager(LocalSoundListener listener) {
+        mLocalSoundListener = listener;
         initTracks();
     }
 
@@ -98,6 +135,11 @@ public class PttSoundManager {
         return track;
     }
 
+    private static long durationMs(short[] samples) {
+        if (samples == null || samples.length == 0) return 0L;
+        return (samples.length * 1000L) / SAMPLE_RATE;
+    }
+
     private short[] generateDualTone(int freq1, int ms1, int freq2, int ms2, int amplitude) {
         int count1 = (SAMPLE_RATE * ms1) / 1000;
         int count2 = (SAMPLE_RATE * ms2) / 1000;
@@ -154,15 +196,27 @@ public class PttSoundManager {
     }
 
     public synchronized void playPermitTone() {
+        if (mReleased) return;
+        long gen = ++mPermitGen;
+        notifyLocalSound(durationMs(mPermitSamples) + LOCAL_SOUND_GUARD_MARGIN_MS);
         mPermitTrack = playTrackWithRecovery(mPermitTrack, mPermitSamples);
+        scheduleResidentStop(ResidentSlot.PERMIT, gen, durationMs(mPermitSamples) + TRACK_STOP_MARGIN_MS);
     }
 
     public synchronized void playBusyTone() {
+        if (mReleased) return;
+        long gen = ++mBusyGen;
+        notifyLocalSound(durationMs(mBusySamples) + LOCAL_SOUND_GUARD_MARGIN_MS);
         mBusyTrack = playTrackWithRecovery(mBusyTrack, mBusySamples);
+        scheduleResidentStop(ResidentSlot.BUSY, gen, durationMs(mBusySamples) + TRACK_STOP_MARGIN_MS);
     }
 
     public synchronized void playReleaseTone() {
+        if (mReleased) return;
+        long gen = ++mReleaseGen;
+        notifyLocalSound(durationMs(mReleaseSamples) + LOCAL_SOUND_GUARD_MARGIN_MS);
         mReleaseTrack = playTrackWithRecovery(mReleaseTrack, mReleaseSamples);
+        scheduleResidentStop(ResidentSlot.RELEASE, gen, durationMs(mReleaseSamples) + TRACK_STOP_MARGIN_MS);
     }
 
     public synchronized void playLockTone() {
@@ -177,20 +231,67 @@ public class PttSoundManager {
         playAuxSamples(mTotWarningSamples);
     }
 
+    /**
+     * Transitions all resident tracks to PLAYSTATE_STOPPED and releases any auxiliary track.
+     * Call right before starting hardware mic capture (PTT down) so HAL stream invalidation
+     * cannot auto-replay any previously played MODE_STATIC tone.
+     */
+    public synchronized void stopAllActiveTones() {
+        mPermitGen++;
+        mBusyGen++;
+        mReleaseGen++;
+        mAuxGen++;
+        stopTrackQuietly(mPermitTrack);
+        stopTrackQuietly(mBusyTrack);
+        stopTrackQuietly(mReleaseTrack);
+        releaseTrack(mAuxTrack);
+        mAuxTrack = null;
+    }
+
     private void playAuxSamples(short[] samples) {
-        if (samples == null) return;
+        if (mReleased || samples == null) return;
+        long gen = ++mAuxGen;
+        long durMs = durationMs(samples);
+        notifyLocalSound(durMs + LOCAL_SOUND_GUARD_MARGIN_MS + 100L);
         try {
-            if (mAuxTrack != null) {
-                try {
-                    mAuxTrack.stop();
-                    mAuxTrack.release();
-                } catch (Exception ignored) {}
-                mAuxTrack = null;
-            }
+            releaseTrack(mAuxTrack);
+            mAuxTrack = null;
             mAuxTrack = createTrack(samples);
             mAuxTrack.play();
+            mCleanupHandler.postDelayed(() -> releaseAuxTrackIfCurrent(gen), durMs + TRACK_STOP_MARGIN_MS);
         } catch (Exception e) {
             Log.e(TAG, "Error playing auxiliary audio track", e);
+        }
+    }
+
+    private void scheduleResidentStop(final ResidentSlot slot, final long gen, long delayMs) {
+        mCleanupHandler.postDelayed(() -> stopResidentTrackIfCurrent(slot, gen), delayMs);
+    }
+
+    private synchronized void stopResidentTrackIfCurrent(ResidentSlot slot, long gen) {
+        if (mReleased) return;
+        switch (slot) {
+            case PERMIT:
+                if (mPermitGen == gen) stopTrackQuietly(mPermitTrack);
+                break;
+            case BUSY:
+                if (mBusyGen == gen) stopTrackQuietly(mBusyTrack);
+                break;
+            case RELEASE:
+                if (mReleaseGen == gen) stopTrackQuietly(mReleaseTrack);
+                break;
+        }
+    }
+
+    private synchronized void releaseAuxTrackIfCurrent(long gen) {
+        if (mReleased || mAuxGen != gen) return;
+        releaseTrack(mAuxTrack);
+        mAuxTrack = null;
+    }
+
+    private void notifyLocalSound(long guardDurationMs) {
+        if (mLocalSoundListener != null) {
+            mLocalSoundListener.onLocalSoundStarted(guardDurationMs);
         }
     }
 
@@ -225,6 +326,12 @@ public class PttSoundManager {
     }
 
     public synchronized void release() {
+        mReleased = true;
+        mPermitGen++;
+        mBusyGen++;
+        mReleaseGen++;
+        mAuxGen++;
+        mCleanupHandler.removeCallbacksAndMessages(null);
         releaseTrack(mPermitTrack);
         mPermitTrack = null;
         releaseTrack(mBusyTrack);
@@ -233,6 +340,16 @@ public class PttSoundManager {
         mReleaseTrack = null;
         releaseTrack(mAuxTrack);
         mAuxTrack = null;
+    }
+
+    private static void stopTrackQuietly(AudioTrack track) {
+        if (track != null && track.getState() == AudioTrack.STATE_INITIALIZED) {
+            try {
+                if (track.getPlayState() != AudioTrack.PLAYSTATE_STOPPED) {
+                    track.stop();
+                }
+            } catch (Exception ignored) {}
+        }
     }
 
     private static void releaseTrack(AudioTrack track) {
