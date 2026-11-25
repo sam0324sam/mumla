@@ -20,7 +20,8 @@
 | **隊員 GPS 定位** | 無 | **自適應低功耗定位信標（5 / 10 / 30 分鐘）**（零洗版）＋**原生全員定位總表** |
 | **純 Wi-Fi 時區校準** | 依賴系統（無 SIM 卡常跳回 GMT+0） | **TimezoneGuardian** 透過 IP 自動校準與每小時守護系統時區 |
 | **省電與語音延遲** | 麥克風長駐喚醒、語音經 UI 執行緒、100ms 緩衝 | **3 秒無鎖麥克風休眠 + 動態 Ping (Wi-Fi 45s / 4G 25s) + UDP 語音直通 + 40ms 緩衝**（實測待機 ~18.8 mA） |
-| **體積與依賴精簡** | 含 CELT7/11、Guava、Jsoup、Tor、公開列表與 30+ 語系 (~17.3 MB) | **純 Opus 核心 + 移除冗餘依賴 + R8 壓縮**（APK 約 **9.3 MB，精簡 46%**） |
+| **體積與依賴精簡** | 含 CELT7/11、Guava、Jsoup、Tor、公開列表與 30+ 語系 (~17.3 MB) | **純 Opus 核心 + 移除冗餘依賴 + R8 壓縮**（APK 約 **9.9 MB**，含繁中像素字型） |
+| **小螢幕顯示與選單** | 面向高解析度手機，細體字在小螢幕糊成灰塊、選單冗長 | **低解析度自動清晰模式（Cubic-11 像素字型 + 純黑高對比 + 緊湊 PTT 條 + Adreno 軟體渲染防花屏）＋極簡側邊選單**（手機端不受影響） |
 | **開機自啟** | 需手動開啟 App 並點擊伺服器 | **開機自動啟動並自動連線**，比照傳統無線電開機即講 |
 | **編譯與維護** | 需本機 Android Studio / Gradle | 內建 **GitHub Actions 雲端自動編譯 APK** ＋手機 Termux/ADB 遠端除錯指引 |
 
@@ -80,10 +81,16 @@
   * **零閒置喚醒與記憶體治理**：延遲初始化 `TextToSpeech`／懸浮窗／熱區、前景通知僅在狀態實際變動時更新並設 `setOnlyAlertOnce(true)`、修復 `ServerAdapter` 執行緒池洩漏（改為共用 15 秒自動回收池）。
 * **超低延遲語音管線**：
   * 收到 UDP 語音封包後於 `THREAD_PRIORITY_AUDIO` 執行緒直通解碼（完全繞過 Android UI 主執行緒）、Speex JitterBuffer 邊際由 100ms 縮減至 **40ms**、單人通話採零執行緒切換快速路徑，並重複使用 `DirectByteBuffer` 與封包緩衝區降低 GC 停頓。
-* **第一性原理體積瘦身（APK 17.30 MB → 9.30 MB，精簡 46%）**：
+* **第一性原理體積瘦身（APK 17.30 MB → ~9.9 MB，含繁中像素字型）**：
   * 轉為純 **Opus** 對講核心，移除過時的 CELT7 / CELT11 編解碼與 8 份原生 `.so`。
   * 移除 `Guava`、`Jsoup`、`Tor / Orbot (netcipher)`、公開伺服器瀏覽、自動抓取大頭貼與 30+ 未使用語系（僅保留 `zh-rTW` / `en` 與 `armeabi-v7a` / `arm64-v8a`）。
   * 語音播報檔降採樣至 16kHz 16-bit Mono 並啟用 R8 程式碼／資源壓縮。
+
+### 8. 小螢幕低解析度清晰模式與極簡對講選單（`DisplayClarityHelper`）
+* **精準偵測低解析度硬體（手機端零影響）**：針對 Anysecu G393 等實體 `128×160`（覆寫 `200×240 @ 80dpi`）超小螢幕自動啟用清晰模式，亦可在「外觀設定」手動切換（`自動` / `強制開啟` / `關閉`）。
+* **Cubic-11 俐方體像素字型＋純黑高對比主題**：內嵌 SIL OFL 開源繁中點陣字型，搭配純黑底 `#000000`、純白字 `#FFFFFF` 與自動字級縮放（`1.95×`），讓繁體中文字在 1.77 吋小面板上筆畫銳利不發糊。
+* **Adreno 304 防花屏與緊湊排版**：低解析度裝置自動改走 Skia 軟體渲染避開 `msm8909go` GPU 破圖，並將房間內螢幕 PTT 按鈕收斂至約 16% 高度、縮減頻道階層縮排。
+* **極簡側邊選單與繁中語系修正**：移除贊助、已釘選頻道、存取代碼等冗餘項目（側邊欄僅保留 **所有頻道 / 收藏 / 設定**），將「伺服器資訊」收整進設定頁，並修正語言選單僅提供支援之繁體中文（`zh-TW`）與英文（`en`）。
 * **自架 Mumble / Murmur 伺服器建議配置**：
   * 配合客戶端 45s Wi-Fi Ping，建議在伺服器將 `timeout` 設為 **`75`**（Docker 環境變數 `MUMBLE_CONFIG_TIMEOUT=75`）。
   * 若使用 Murmur 1.5+，建議設定 `listenersperchannel=0` 與 `listenersperuser=0`（`MUMBLE_CONFIG_LISTENERSPERCHANNEL=0`、`MUMBLE_CONFIG_LISTENERSPERUSER=0`），可消除對傳統 Mumble 1.2.5 協定客戶端發送的 `[WARNING] ChannelListener` 通知告警。

@@ -17,6 +17,9 @@
         app:title="@string/appearance"
         app:fragment="se.lublin.mumla.preference.AppearanceSettingsFragment"
         app:iconSpaceReserved="false" />
+    <Preference app:key="server_info"
+        app:title="@string/information"
+        app:iconSpaceReserved="false" />
     <Preference app:key="about_settings"
         app:title="@string/about"
         app:fragment="se.lublin.mumla.preference.AboutSettingsFragment"

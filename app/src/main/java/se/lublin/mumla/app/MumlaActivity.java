@@ -212,11 +212,7 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
     private final HumlaObserver mObserver = new HumlaObserver() {
         @Override
         public void onConnected() {
-            if (mSettings.shouldStartUpInPinnedMode()) {
-                loadDrawerFragment(DrawerAdapter.ITEM_PINNED_CHANNELS);
-            } else {
-                loadDrawerFragment(DrawerAdapter.ITEM_SERVER);
-            }
+            loadDrawerFragment(DrawerAdapter.ITEM_SERVER);
 
             mDrawerAdapter.notifyDataSetChanged();
             supportInvalidateOptionsMenu();
@@ -355,20 +351,6 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
 
         View headerView = getLayoutInflater().inflate(R.layout.list_drawer_headerlogo, mDrawerList, false);
         mDrawerList.addHeaderView(headerView, null, false);
-
-        if (BuildConfig.FLAVOR.equals("foss")) {
-            final int layoutResId = getResources().getIdentifier("list_drawer_headerdonate_foss", "xml", getPackageName());
-            final int stringResId = getResources().getIdentifier("donate_link_foss", "string", getPackageName());
-            if ((layoutResId != 0) && (stringResId != 0)) {
-                View footerView = getLayoutInflater().inflate(layoutResId, mDrawerList, false);
-                mDrawerList.addHeaderView(footerView, null, true);
-                footerView.setOnClickListener(v -> {
-                    Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(getString(stringResId)));
-                    startActivity(intent);
-                    mDrawerLayout.closeDrawers();
-                });
-            }
-        }
 
         mDrawerList.setOnItemClickListener(this);
         mDrawerAdapter = new DrawerAdapter(this, this);
@@ -605,6 +587,16 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
                 .show();
     }
 
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (intent != null && intent.hasExtra(EXTRA_DRAWER_FRAGMENT)) {
+            int fragmentId = intent.getIntExtra(EXTRA_DRAWER_FRAGMENT, DrawerAdapter.ITEM_FAVOURITES);
+            loadDrawerFragment(fragmentId);
+        }
+    }
+
     /**
      * Loads a fragment from the drawer.
      */
@@ -616,17 +608,11 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
                 fragmentClass = ChannelFragment.class;
                 break;
             case DrawerAdapter.ITEM_INFO:
+                if (mService == null || !mService.isConnected()) {
+                    Toast.makeText(this, R.string.drawer_not_connected, Toast.LENGTH_SHORT).show();
+                    return;
+                }
                 fragmentClass = ServerInfoFragment.class;
-                break;
-            case DrawerAdapter.ITEM_ACCESS_TOKENS:
-                fragmentClass = AccessTokenFragment.class;
-                Server connectedServer = getService().getTargetServer();
-                args.putLong("server", connectedServer.getId());
-                args.putStringArrayList("access_tokens", (ArrayList<String>) mDatabase.getAccessTokens(connectedServer.getId()));
-                break;
-            case DrawerAdapter.ITEM_PINNED_CHANNELS:
-                fragmentClass = ChannelFragment.class;
-                args.putBoolean("pinned", true);
                 break;
             case DrawerAdapter.ITEM_FAVOURITES:
                 fragmentClass = FavouriteServerListFragment.class;
@@ -643,7 +629,10 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
                 .replace(R.id.content_frame, fragment, fragmentClass.getName())
                 .setTransition(FragmentTransaction.TRANSIT_FRAGMENT_FADE)
                 .commit();
-        requireNonNull(getSupportActionBar()).setTitle(mDrawerAdapter.getItemWithId(fragmentId).title);
+        DrawerAdapter.DrawerRow row = mDrawerAdapter.getItemWithId(fragmentId);
+        String title = (row != null) ? row.title
+                : (fragmentId == DrawerAdapter.ITEM_INFO ? getString(R.string.information) : getString(R.string.app_name));
+        requireNonNull(getSupportActionBar()).setTitle(title);
     }
 
     public void connectToServer(final Server server) {

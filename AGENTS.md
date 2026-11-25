@@ -67,3 +67,9 @@ gh run download "$RUN_ID" --name mumla-debug-apk --dir /tmp/mumla-apk
    adb logcat -b crash -d
    ```
 3. Report the fix summary and verification result concisely in Traditional Chinese (繁體中文).
+
+## Hardware & UI Gotchas (Anysecu G393 / msm8909go)
+- **Display override quirk**: Physical panel is `128x160`, but firmware overrides it to `200x240 @ 80dpi` (`smallestScreenWidthDp` reports `400dp`). Never use `sw300dp` resource qualifiers to detect this screen; always use `DisplayClarityHelper` (`densityDpi <= 120 || shortSidePx <= 240`), and never hardcode large raw pixel heights (e.g., `150px` PTT button fills 75% of the screen).
+- **Adreno 304 GPU corruption**: On overridden low-res displays, HWUI OpenGL rendering of `RecyclerView` / transparent containers causes stride misalignment & snow corruption. Every user-facing `Activity` should call `DisplayClarityHelper.applySafeRendering(this)` (forces Skia `LAYER_TYPE_SOFTWARE` on low-res hardware only) and set an opaque `?android:attr/colorBackground`.
+- **Locale sync**: `app/build.gradle` restricts `resourceConfigurations` to `['zh-rTW', 'en']`. Keep `language_notranslate.xml` and `local_config.xml` aligned with packed locales.
+- **3-Screen UI Verification SOP**: After any UI/theme change, capture and inspect all three screens via `adb screencap` before shipping: **Favourites list**, **In-room channel list**, and **Settings**.

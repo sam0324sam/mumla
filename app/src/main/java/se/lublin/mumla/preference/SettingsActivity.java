@@ -1,6 +1,7 @@
 package se.lublin.mumla.preference;
 
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 
@@ -9,10 +10,13 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 import androidx.fragment.app.Fragment;
+import androidx.preference.Preference;
 import androidx.preference.PreferenceManager;
 
 import se.lublin.mumla.R;
 import se.lublin.mumla.Settings;
+import se.lublin.mumla.app.DrawerAdapter;
+import se.lublin.mumla.app.MumlaActivity;
 import se.lublin.mumla.util.DisplayClarityHelper;
 
 public class SettingsActivity extends AppCompatActivity implements SharedPreferences.OnSharedPreferenceChangeListener {
@@ -94,6 +98,17 @@ public class SettingsActivity extends AppCompatActivity implements SharedPrefere
         @Override
         public void onCreatePreferences(Bundle savedInstanceState, String rootKey) {
             setPreferencesFromResource(R.xml.preference_headers, rootKey);
+            Preference serverInfoPref = findPreference("server_info");
+            if (serverInfoPref != null) {
+                serverInfoPref.setOnPreferenceClickListener(preference -> {
+                    Intent intent = new Intent(requireContext(), MumlaActivity.class);
+                    intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                    intent.putExtra(MumlaActivity.EXTRA_DRAWER_FRAGMENT, DrawerAdapter.ITEM_INFO);
+                    startActivity(intent);
+                    requireActivity().finish();
+                    return true;
+                });
+            }
         }
     }
 }
