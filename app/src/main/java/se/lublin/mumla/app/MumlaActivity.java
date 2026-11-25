@@ -100,6 +100,7 @@ import se.lublin.mumla.servers.FavouriteServerListFragment;
 import se.lublin.mumla.servers.ServerEditFragment;
 import se.lublin.mumla.service.IMumlaService;
 import se.lublin.mumla.service.MumlaService;
+import se.lublin.mumla.util.DisplayClarityHelper;
 import se.lublin.mumla.util.HumlaServiceFragment;
 import se.lublin.mumla.util.HumlaServiceProvider;
 import se.lublin.mumla.util.MumlaTrustStore;
@@ -302,13 +303,21 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
     };
 
     @Override
+    protected void attachBaseContext(android.content.Context newBase) {
+        super.attachBaseContext(DisplayClarityHelper.wrapContext(newBase));
+    }
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         mSettings = Settings.getInstance(this);
+        DisplayClarityHelper.applyActivityTheme(this);
 
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        DisplayClarityHelper.applySafeRendering(this);
 
         Toolbar toolbar = findViewById(R.id.toolbar);
+        DisplayClarityHelper.applyCompactToolbar(this, toolbar);
         setSupportActionBar(toolbar);
 
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
@@ -891,6 +900,9 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
                 break;
             case Settings.PREF_HANDSET_MODE:
                 setVolumeControlStream(mSettings.isHandsetMode() ? AudioManager.STREAM_VOICE_CALL : AudioManager.STREAM_MUSIC);
+                break;
+            case Settings.PREF_LOW_RES_CLARITY_MODE:
+                recreate();
                 break;
         }
     }

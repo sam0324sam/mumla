@@ -195,4 +195,8 @@
     <string name="roster_locations_empty">目前尚無隊員定位回報紀錄。</string>
     <string name="peer_wifi_location">Wi-Fi 隊友座標備援</string>
     <string name="peer_wifi_location_sum">室內無 GPS 訊號時，使用同 Wi-Fi 網域內隊友的座標作為備援（預設關閉以利純 GPS 測試）。</string>
+    <string name="low_res_clarity_mode">小螢幕清晰模式</string>
+    <string name="low_res_clarity_auto">自動（低解析度對講機自動啟用）</string>
+    <string name="low_res_clarity_on">強制開啟（像素字體＋高對比）</string>
+    <string name="low_res_clarity_off">關閉</string>
 </resources>

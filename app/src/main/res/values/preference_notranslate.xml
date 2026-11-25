@@ -57,6 +57,18 @@
         <item>forceDark</item>
     </string-array>
 
+    <string-array name="lowResClarityNames">
+        <item>@string/low_res_clarity_auto</item>
+        <item>@string/low_res_clarity_on</item>
+        <item>@string/low_res_clarity_off</item>
+    </string-array>
+
+    <string-array name="lowResClarityValues">
+        <item>auto</item>
+        <item>on</item>
+        <item>off</item>
+    </string-array>
+
     <string-array name="hotCornerNames">
         <item>@string/hot_corner_none</item>
         <item>@string/hot_corner_top_left</item>

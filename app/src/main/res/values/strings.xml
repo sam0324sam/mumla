@@ -243,4 +243,8 @@
     <string name="roster_locations_empty">No location beacon records available yet.</string>
     <string name="peer_wifi_location">Peer Wi-Fi Location Fallback</string>
     <string name="peer_wifi_location_sum">Use nearby team members\' location on the same Wi-Fi when indoors with no GPS.</string>
+    <string name="low_res_clarity_mode">Small-Screen Clarity Mode</string>
+    <string name="low_res_clarity_auto">Auto (Low-Res Walkie-Talkie)</string>
+    <string name="low_res_clarity_on">Always On (Pixel Font + High Contrast)</string>
+    <string name="low_res_clarity_off">Off</string>
 </resources>

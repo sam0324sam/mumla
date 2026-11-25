@@ -29,6 +29,15 @@
         app:iconSpaceReserved="false" />
 
     <ListPreference
+        android:key="lowResClarityMode"
+        android:defaultValue="auto"
+        android:entries="@array/lowResClarityNames"
+        android:entryValues="@array/lowResClarityValues"
+        app:useSimpleSummaryProvider="true"
+        android:title="@string/low_res_clarity_mode"
+        app:iconSpaceReserved="false" />
+
+    <ListPreference
         app:key="language"
         app:defaultValue="system"
         app:title="@string/language"

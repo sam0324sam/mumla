@@ -26,4 +26,66 @@
     </style>
 
     <style name="Theme.Mumla" parent="Base.Theme.Mumla" />
+
+    <!-- High-contrast, Cubic-11 pixel-font theme for low-res PoC walkie-talkie screens -->
+    <style name="Theme.Mumla.LowResClarity" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:fontFamily">@font/cubic_11_family</item>
+        <item name="fontFamily">@font/cubic_11_family</item>
+
+        <item name="colorPrimary">#003A5C</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorPrimaryDark">#00243A</item>
+        <item name="pttPressed">#005B8F</item>
+
+        <item name="android:windowBackground">#000000</item>
+        <item name="android:colorBackground">#000000</item>
+        <item name="colorSurface">#000000</item>
+        <item name="colorSurfaceVariant">#141414</item>
+        <item name="colorOnSurface">#FFFFFF</item>
+        <item name="colorOnBackground">#FFFFFF</item>
+
+        <item name="android:textColorPrimary">#FFFFFF</item>
+        <item name="android:textColorSecondary">#EAEAEA</item>
+        <item name="android:textColorTertiary">#D0D0D0</item>
+        <item name="android:textColorPrimaryInverse">#FFFFFF</item>
+        <item name="android:textColorSecondaryInverse">#EAEAEA</item>
+
+        <item name="actionBarSize">48dp</item>
+        <item name="android:actionBarSize">48dp</item>
+
+        <item name="windowActionModeOverlay">true</item>
+        <item name="actionModeStyle">@style/App.Widget.ActionMode</item>
+        <item name="popupOverlay">@style/ThemeOverlay.Mumla.LowResClarity.Popup</item>
+        <item name="cardStyle">@style/Theme.Mumla.LowResClarity.CardView</item>
+        <item name="alertDialogTheme">@style/ThemeOverlay.Mumla.LowResClarity.Dialog</item>
+        <item name="materialAlertDialogTheme">@style/ThemeOverlay.Mumla.LowResClarity.Dialog</item>
+    </style>
+
+    <style name="ThemeOverlay.Mumla.LowResClarity.Popup" parent="ThemeOverlay.Material3.Dark">
+        <item name="android:fontFamily">@font/cubic_11_family</item>
+        <item name="fontFamily">@font/cubic_11_family</item>
+        <item name="android:colorBackground">#000000</item>
+        <item name="android:textColorPrimary">#FFFFFF</item>
+    </style>
+
+    <style name="ThemeOverlay.Mumla.LowResClarity.Dialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="android:fontFamily">@font/cubic_11_family</item>
+        <item name="fontFamily">@font/cubic_11_family</item>
+        <item name="colorPrimary">#33B5E5</item>
+        <item name="colorSurface">#000000</item>
+        <item name="android:textColorPrimary">#FFFFFF</item>
+        <item name="android:textColorSecondary">#EAEAEA</item>
+    </style>
+
+    <style name="Theme.Mumla.LowResClarity.CardView" parent="CardView">
+        <item name="cardBackgroundColor">#121212</item>
+        <item name="cardElevation">0dp</item>
+    </style>
+
+    <style name="TextAppearance.Mumla.LowResClarity.ToolbarTitle" parent="TextAppearance.Widget.AppCompat.Toolbar.Title">
+        <item name="android:fontFamily">@font/cubic_11_family</item>
+        <item name="fontFamily">@font/cubic_11_family</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:textColor">#FFFFFF</item>
+    </style>
 </resources>

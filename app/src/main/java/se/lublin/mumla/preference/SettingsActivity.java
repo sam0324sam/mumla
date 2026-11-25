@@ -1,22 +1,38 @@
 package se.lublin.mumla.preference;
 
+import android.content.Context;
+import android.content.SharedPreferences;
 import android.os.Bundle;
 
 import androidx.activity.OnBackPressedCallback;
+import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 import androidx.fragment.app.Fragment;
+import androidx.preference.PreferenceManager;
 
 import se.lublin.mumla.R;
+import se.lublin.mumla.Settings;
+import se.lublin.mumla.util.DisplayClarityHelper;
 
-public class SettingsActivity extends AppCompatActivity {
+public class SettingsActivity extends AppCompatActivity implements SharedPreferences.OnSharedPreferenceChangeListener {
+
+    @Override
+    protected void attachBaseContext(Context newBase) {
+        super.attachBaseContext(DisplayClarityHelper.wrapContext(newBase));
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        DisplayClarityHelper.applyActivityTheme(this);
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_settings);
+        DisplayClarityHelper.applySafeRendering(this);
+
+        PreferenceManager.getDefaultSharedPreferences(this).registerOnSharedPreferenceChangeListener(this);
 
         Toolbar toolbar = findViewById(R.id.toolbar);
+        DisplayClarityHelper.applyCompactToolbar(this, toolbar);
         setSupportActionBar(toolbar);
         if (getSupportActionBar() != null) {
             getSupportActionBar().setDisplayHomeAsUpEnabled(true);
@@ -59,6 +75,19 @@ public class SettingsActivity extends AppCompatActivity {
                 }
             }
         });
+    }
+
+    @Override
+    protected void onDestroy() {
+        PreferenceManager.getDefaultSharedPreferences(this).unregisterOnSharedPreferenceChangeListener(this);
+        super.onDestroy();
+    }
+
+    @Override
+    public void onSharedPreferenceChanged(SharedPreferences sharedPreferences, @Nullable String key) {
+        if (Settings.PREF_LOW_RES_CLARITY_MODE.equals(key)) {
+            recreate();
+        }
     }
 
     public static class RootPreferenceFragment extends MumlaPreferenceFragment {

@@ -54,6 +54,7 @@ import se.lublin.humla.util.IHumlaObserver;
 import se.lublin.humla.util.VoiceTargetMode;
 import se.lublin.mumla.R;
 import se.lublin.mumla.Settings;
+import se.lublin.mumla.util.DisplayClarityHelper;
 import se.lublin.mumla.util.HumlaServiceFragment;
 
 /**
@@ -306,8 +307,18 @@ public class ChannelFragment extends HumlaServiceFragment implements SharedPrefe
     private void configureInput() {
         Settings settings = Settings.getInstance(getActivity());
 
-        ViewGroup.LayoutParams params = mTalkView.getLayoutParams();
-        params.height = settings.getPTTButtonHeight();
+        int pttHeightPx = settings.getPTTButtonHeight();
+        if (getActivity() != null && DisplayClarityHelper.isClarityModeEnabled(getActivity())) {
+            int screenHeightPx = getResources().getDisplayMetrics().heightPixels;
+            int maxCompactPttPx = Math.max(24, Math.min(36, (int) (screenHeightPx * 0.16f)));
+            pttHeightPx = Math.min(pttHeightPx, maxCompactPttPx);
+            mTalkButton.setMinHeight(0);
+            mTalkButton.setMinimumHeight(0);
+            mTalkButton.setPadding(4, 0, 4, 0);
+        }
+
+        ViewGroup.LayoutParams params = mTalkButton.getLayoutParams();
+        params.height = pttHeightPx;
         mTalkButton.setLayoutParams(params);
 
         boolean muted = false;

@@ -55,6 +55,7 @@ import se.lublin.mumla.R;
 import se.lublin.mumla.db.MumlaDatabase;
 import se.lublin.mumla.drawable.CircleDrawable;
 import se.lublin.mumla.service.MumlaService;
+import se.lublin.mumla.util.DisplayClarityHelper;
 
 /**
  * Created by andrew on 31/07/13.
@@ -174,7 +175,7 @@ public class ChannelListAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
                     }
                 }
             }
-            cvh.mChannelName.setTypeface(null, nameTypeface);
+            DisplayClarityHelper.applyTypefaceStyle(cvh.mChannelName, nameTypeface);
 
             if (mShowChannelUserCount) {
                 cvh.mChannelUserCount.setVisibility(View.VISIBLE);
@@ -186,7 +187,8 @@ public class ChannelListAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
 
             // Pad the view depending on channel's nested level.
             DisplayMetrics metrics = mContext.getResources().getDisplayMetrics();
-            float margin = node.getDepth() * TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 25, metrics);
+            float margin = node.getDepth() * TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_DIP, DisplayClarityHelper.getChannelIndentDp(mContext), metrics);
             cvh.mChannelHolder.setPadding((int) margin,
                     cvh.mChannelHolder.getPaddingTop(),
                     cvh.mChannelHolder.getPaddingRight(),
@@ -246,13 +248,14 @@ public class ChannelListAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             } else {
                 typefaceStyle = Typeface.NORMAL;
             }
-            uvh.mUserName.setTypeface(null, typefaceStyle);
+            DisplayClarityHelper.applyTypefaceStyle(uvh.mUserName, typefaceStyle);
 
             uvh.mUserTalkHighlight.setImageDrawable(getTalkStateDrawable(user));
 
             // Pad the view depending on channel's nested level.
             DisplayMetrics metrics = mContext.getResources().getDisplayMetrics();
-            float margin = (node.getDepth() + 1) * TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 25, metrics);
+            float margin = (node.getDepth() + 1) * TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_DIP, DisplayClarityHelper.getChannelIndentDp(mContext), metrics);
             uvh.mUserHolder.setPadding((int) margin,
                     uvh.mUserHolder.getPaddingTop(),
                     uvh.mUserHolder.getPaddingRight(),

@@ -19,6 +19,7 @@ public class MumlaApplication extends Application implements SharedPreferences.O
         super.onCreate();
         SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(this);
         applyTheme(preferences);
+        applyLanguage(preferences);
         preferences.registerOnSharedPreferenceChangeListener(this);
     }
 
@@ -29,12 +30,25 @@ public class MumlaApplication extends Application implements SharedPreferences.O
         }
         switch (key) {
             case PREF_LANGUAGE:
-                String language = preferences.getString(PREF_LANGUAGE, "system");
-                setApplicationLocales(language.equals("system") ? getEmptyLocaleList() : forLanguageTags(language));
+                applyLanguage(preferences);
                 break;
             case PREF_THEME:
                 applyTheme(preferences);
                 break;
+        }
+    }
+
+    private static void applyLanguage(SharedPreferences preferences) {
+        String language = preferences.getString(PREF_LANGUAGE, "system");
+        if (language == null || language.equals("system")) {
+            setApplicationLocales(getEmptyLocaleList());
+        } else {
+            // Migrate legacy zh-CN selection (stripped by resourceConfigurations) to zh-TW
+            if (language.equals("zh-CN")) {
+                language = "zh-TW";
+                preferences.edit().putString(PREF_LANGUAGE, language).apply();
+            }
+            setApplicationLocales(forLanguageTags(language));
         }
     }
 

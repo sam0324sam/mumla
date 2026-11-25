@@ -95,6 +95,10 @@ public class Settings {
 
     public static final String PREF_THEME = "theme";
     public static final String PREF_LANGUAGE = "language";
+    public static final String PREF_LOW_RES_CLARITY_MODE = "lowResClarityMode";
+    public static final String LOW_RES_CLARITY_AUTO = "auto";
+    public static final String LOW_RES_CLARITY_ON = "on";
+    public static final String LOW_RES_CLARITY_OFF = "off";
 
     public static final String PREF_PTT_BUTTON_HEIGHT = "pttButtonHeight";
     public static final int DEFAULT_PTT_BUTTON_HEIGHT = 150;
