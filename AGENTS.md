@@ -26,9 +26,9 @@ When the user runs an AI agent (such as Antigravity CLI `agy`) from **Android Te
    ```
    If the user needs to reproduce the bug live, clear the buffer (`adb logcat -c`), ask them to trigger the bug once, then dump with `adb logcat -d`.
 3. **Remote NAS Log Hub (no ADB needed)**: Walkie-talkies upload diagnostic/crash logs directly to `https://mumla.hiyoko-sam.com` (Docker in `tools/mumla-hub/`).
-   - Web viewer (HTTP Basic Auth, password = `HUB_TOKEN`): `https://mumla.hiyoko-sam.com/logs` (or `/mumla/logs` if mounted under `/mumla/`)
-   - Latest log plain text: `curl -H "X-Mumla-Token: <HUB_TOKEN>" https://mumla.hiyoko-sam.com/logs/latest` (supports `?user=Hiyoko` / `?user=Sam`)
-   - JSON list: `curl -H "X-Mumla-Token: <HUB_TOKEN>" "https://mumla.hiyoko-sam.com/logs?format=json"`
+   - Web viewer (HTTP Basic Auth, username = anything, password = `LOG_VIEW_PASSWORD`, defaults to `HUB_TOKEN` if unset): `https://mumla.hiyoko-sam.com/logs` (or `/mumla/logs` if mounted under `/mumla/`)
+   - Latest log plain text: `curl -H "X-Mumla-Token: <LOG_VIEW_PASSWORD>" https://mumla.hiyoko-sam.com/logs/latest` (supports `?user=Hiyoko` / `?user=Sam`)
+   - JSON list: `curl -H "X-Mumla-Token: <LOG_VIEW_PASSWORD>" "https://mumla.hiyoko-sam.com/logs?format=json"`
 
 ### 2. Fix Code & Push to Trigger Cloud Build
 1. Inspect the relevant source files in `app/src/main/...`, apply a minimal, clean fix.
