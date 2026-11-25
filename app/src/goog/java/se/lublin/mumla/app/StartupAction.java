@@ -4,7 +4,6 @@ import static com.android.billingclient.api.BillingClient.BillingResponseCode.OK
 import static com.android.billingclient.api.BillingClient.ProductType.INAPP;
 import static com.android.billingclient.api.Purchase.PurchaseState.PENDING;
 import static java.util.concurrent.TimeUnit.DAYS;
-import static se.lublin.mumla.app.DialogUtils.maybeShowNewsDialog;
 
 import android.app.Activity;
 import android.content.SharedPreferences;
@@ -54,11 +53,6 @@ public class StartupAction implements IStartupAction {
         final int oldStartupCount = preferences.getInt(PREF_STARTUP_COUNT, 0);
         final int startupCount = (oldStartupCount == Integer.MAX_VALUE) ? 1 : oldStartupCount + 1;
         preferences.edit().putInt(PREF_STARTUP_COUNT, startupCount).apply();
-
-        if (maybeShowNewsDialog(activity)) {
-            // We showed some news so we don't show anything else
-            return;
-        }
 
         if (preferences.getBoolean(PREF_HAS_DONATED, false)) {
             final long lastVerification = preferences.getLong(PREF_LAST_DONATION_VERIFY_TIMESTAMP, 0);

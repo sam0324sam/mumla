@@ -81,8 +81,6 @@ android {
         targetSdk 36
 
         applicationId "se.lublin.mumla"
-        // Remember: app_news_items_vX_Y_Z in src/main/res/values/strings.xml
-        // and NEWS_ITEMS in src/main/res/java/se/lublin/mumla/app/DialogUtils.java
         // Auto-incrementing versionCode per git commit for seamless OTA upgrades
         versionCode 3070300 + gitCommitCount
         versionName "${baseVersionTag}-poc.${gitCommitCount}-${gitSha}"

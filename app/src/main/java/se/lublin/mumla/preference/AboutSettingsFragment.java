@@ -1,10 +1,8 @@
 package se.lublin.mumla.preference;
 
 import static java.util.Objects.requireNonNull;
-import static se.lublin.mumla.app.DialogUtils.showAllNewsDialog;
 
 import android.os.Bundle;
-import android.widget.Toast;
 
 import androidx.preference.Preference;
 
@@ -15,7 +13,6 @@ import java.util.TimeZone;
 
 import se.lublin.mumla.BuildConfig;
 import se.lublin.mumla.R;
-import se.lublin.mumla.Settings;
 
 public class AboutSettingsFragment extends MumlaPreferenceFragment {
     private static final String VERSION_KEY = "version";
@@ -35,14 +32,5 @@ public class AboutSettingsFragment extends MumlaPreferenceFragment {
         }
         Preference versionPreference = getPreferenceScreen().findPreference(VERSION_KEY);
         requireNonNull(versionPreference).setSummary(summary);
-        requireNonNull(versionPreference).setOnPreferenceClickListener(preference -> {
-            Settings.getInstance(requireContext()).resetNewsShownVersion();
-            return true;
-        });
-        Preference showNewsPreference = getPreferenceScreen().findPreference("showNews");
-        requireNonNull(showNewsPreference).setOnPreferenceClickListener(preference -> {
-            showAllNewsDialog(requireContext());
-            return true;
-        });
     }
 }

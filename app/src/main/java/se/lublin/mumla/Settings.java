@@ -178,8 +178,6 @@ public class Settings {
     public static final String PREF_PEER_WIFI_LOCATION = "peer_wifi_location_fallback";
     public static final boolean DEFAULT_PEER_WIFI_LOCATION = false;
 
-    public static final String PREF_NEWS_SHOWN_VERSIONS = "newsShownVersions";
-
     static {
         ARRAY_INPUT_METHODS = new HashSet<String>();
         ARRAY_INPUT_METHODS.add(ARRAY_INPUT_METHOD_VOICE);
@@ -413,28 +411,6 @@ public class Settings {
 
     public boolean shouldStartUpInPinnedMode() {
         return preferences.getBoolean(PREF_START_UP_IN_PINNED_MODE, DEFAULT_START_UP_IN_PINNED_MODE);
-    }
-
-    public Set<String> getNewsShownVersions() {
-        return preferences.getStringSet(PREF_NEWS_SHOWN_VERSIONS, new HashSet<>());
-    }
-
-    public void addNewsShownVersions(@NonNull List<String> versions) {
-        // Making a copy; getStringSet docs states that the returned set must not be modified
-        Set<String> shownVersions = new HashSet<>(preferences.getStringSet(PREF_NEWS_SHOWN_VERSIONS, new HashSet<>()));
-        for (Iterator<String> it = versions.iterator(); it.hasNext(); ) {
-            String s = it.next();
-            if (s == null || s.isEmpty()) {
-                it.remove();
-            }
-        }
-        if (shownVersions.addAll(versions)) {
-            preferences.edit().putStringSet(PREF_NEWS_SHOWN_VERSIONS, shownVersions).apply();
-        }
-    }
-
-    public void resetNewsShownVersion() {
-        preferences.edit().putStringSet(PREF_NEWS_SHOWN_VERSIONS, new HashSet<>()).apply();
     }
 
     public long getLastServer() {
