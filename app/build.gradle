@@ -70,6 +70,12 @@ android {
         commandLine "git", "rev-parse", "--short=7", "HEAD"
     }.standardOutput.asText.get().trim()
 
+    def gitCommitCount = providers.exec {
+        commandLine "git", "rev-list", "--count", "HEAD"
+    }.standardOutput.asText.get().trim().toInteger()
+
+    def baseVersionTag = gitDescribe.split("-")[0]
+
     defaultConfig {
         minSdkVersion 21
         targetSdk 36
@@ -77,9 +83,9 @@ android {
         applicationId "se.lublin.mumla"
         // Remember: app_news_items_vX_Y_Z in src/main/res/values/strings.xml
         // and NEWS_ITEMS in src/main/res/java/se/lublin/mumla/app/DialogUtils.java
-        //     code:XYYZZbb (bb for build)
-        versionCode 3070300
-        versionName gitDescribe
+        // Auto-incrementing versionCode per git commit for seamless OTA upgrades
+        versionCode 3070300 + gitCommitCount
+        versionName "${baseVersionTag}-poc.${gitCommitCount}-${gitSha}"
 
         // Target real ARM walkie-talkies (armeabi-v7a) and modern ARM64 phones; strip ~4MB x86/x86_64 emulator libs
         ndk {
