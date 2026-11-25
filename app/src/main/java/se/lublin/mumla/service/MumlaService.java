@@ -59,7 +59,6 @@ import android.content.Context;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioTrack;
-import android.os.BatteryManager;
 import se.lublin.mumla.app.PocketLockActivity;
 
 import se.lublin.humla.Constants;
@@ -215,13 +214,8 @@ public class MumlaService extends HumlaService implements
     private ScheduledFuture<?> mVoiceReleaseFuture;
     private PowerManager.WakeLock mVoiceWakeLock;
 
-    // Battery monitoring (Thresholds: 80, 60, 40, 20, 10, 5)
-    private static final int[] BATTERY_THRESHOLDS = { 80, 60, 40, 20, 10, 5 };
-    private BroadcastReceiver mBatteryReceiver;
-    private int mLastAnnouncedBatteryThreshold = -1;
-    private boolean mBatteryMonitorInitialized = false;
-    private boolean mWasCharging = false;
-    private int mPendingBatteryResId = 0;
+    // Battery & voltage monitor (unplug settle window, TX-sag debounce, PTT deferral)
+    private BatteryMonitor mBatteryMonitor;
 
     // Time-Out Timer (TOT 60s)
     private static final long TOT_TIMEOUT_MS = 60000;
@@ -558,9 +552,9 @@ public class MumlaService extends HumlaService implements
         GpsBeaconManager.getInstance(this).stop();
         TimezoneGuardianManager.getInstance(this).stop();
         stopLogcatMonitor();
-        if (mBatteryReceiver != null) {
-            try { unregisterReceiver(mBatteryReceiver); } catch (Exception ignored) {}
-            mBatteryReceiver = null;
+        if (mBatteryMonitor != null) {
+            mBatteryMonitor.stop();
+            mBatteryMonitor = null;
         }
         if (mAuxCommandReceiver != null) {
             try { unregisterReceiver(mAuxCommandReceiver); } catch (Exception ignored) {}
@@ -1085,15 +1079,8 @@ public class MumlaService extends HumlaService implements
             }
             Log.i(TAG, "PTT released: Stopped transmitting and played release tone");
 
-            if (mPendingBatteryResId != 0) {
-                final int resId = mPendingBatteryResId;
-                mPendingBatteryResId = 0;
-                mUiHandler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        playBatteryVoice(resId);
-                    }
-                }, 400);
+            if (mBatteryMonitor != null) {
+                mBatteryMonitor.onTalkEnded();
             }
         }
     }
@@ -1434,90 +1421,30 @@ public class MumlaService extends HumlaService implements
     }
 
     private void initBatteryMonitoring() {
-        if (mBatteryReceiver != null) return;
-        mBatteryReceiver = new BroadcastReceiver() {
+        if (mBatteryMonitor != null) return;
+        mBatteryMonitor = new BatteryMonitor(this, mUiHandler, new BatteryMonitor.Listener() {
             @Override
-            public void onReceive(Context context, Intent intent) {
-                if (intent == null || !Intent.ACTION_BATTERY_CHANGED.equals(intent.getAction())) return;
-
-                int status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
-                boolean isCharging = (status == BatteryManager.BATTERY_STATUS_CHARGING ||
-                                      status == BatteryManager.BATTERY_STATUS_FULL);
-
-                int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
-                int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
-                if (scale <= 0) scale = 100;
-                int percent = (int) ((level / (float) scale) * 100);
-
-                handleBatteryUpdate(percent, isCharging);
+            public void onBatteryStatusChanged(@androidx.annotation.NonNull BatteryMonitor.Snapshot snapshot) {
+                GpsBeaconManager.getInstance(MumlaService.this)
+                        .updateBatteryStatus(snapshot.percent, snapshot.isCharging);
             }
-        };
-        registerReceiver(mBatteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-    }
 
-    private int computeBatteryBaselineThreshold(int percent) {
-        int baseline = -1;
-        for (int t : BATTERY_THRESHOLDS) {
-            if (percent <= t) {
-                baseline = t;
+            @Override
+            public boolean isTalking() {
+                return MumlaService.this.isTalking();
             }
-        }
-        return baseline;
-    }
 
-    private void handleBatteryUpdate(int percent, boolean isCharging) {
-        GpsBeaconManager.getInstance(this).updateBatteryStatus(percent, isCharging);
-
-        if (!mBatteryMonitorInitialized) {
-            mBatteryMonitorInitialized = true;
-            mWasCharging = isCharging;
-            mLastAnnouncedBatteryThreshold = computeBatteryBaselineThreshold(percent);
-            Log.i(TAG, "Battery monitor initialized: " + percent + "%, charging=" + isCharging + ", baseThreshold=" + mLastAnnouncedBatteryThreshold);
-            return;
-        }
-
-        if (isCharging) {
-            mWasCharging = true;
-            mPendingBatteryResId = 0;
-            return;
-        }
-
-        if (mWasCharging) {
-            mWasCharging = false;
-            mLastAnnouncedBatteryThreshold = computeBatteryBaselineThreshold(percent);
-            Log.i(TAG, "Battery unplugged at " + percent + "%, re-baselined threshold=" + mLastAnnouncedBatteryThreshold);
-            return;
-        }
-
-        for (int t : BATTERY_THRESHOLDS) {
-            if (percent <= t && (mLastAnnouncedBatteryThreshold == -1 || mLastAnnouncedBatteryThreshold > t)) {
-                mLastAnnouncedBatteryThreshold = t;
-                int resId = getBatteryAudioRes(t);
-                if (isTalking()) {
-                    mPendingBatteryResId = resId;
-                    Log.i(TAG, "Battery threshold " + t + "% hit during PTT, deferred.");
-                } else {
-                    Log.i(TAG, "Battery threshold " + t + "% hit (" + percent + "%), announcing now.");
-                    playBatteryVoice(resId);
+            @Override
+            public void onAnnounceThreshold(int threshold, int audioResId,
+                                            @androidx.annotation.NonNull BatteryMonitor.Snapshot snapshot) {
+                playBatteryVoice(audioResId);
+                if (threshold <= 20) {
+                    GpsBeaconManager.getInstance(MumlaService.this)
+                            .triggerImmediateBeacon("低電量" + threshold + "%告警");
                 }
-                if (t <= 20) {
-                    GpsBeaconManager.getInstance(this).triggerImmediateBeacon("低電量" + t + "%告警");
-                }
-                break;
             }
-        }
-    }
-
-    private int getBatteryAudioRes(int threshold) {
-        switch (threshold) {
-            case 80: return R.raw.battery_80;
-            case 60: return R.raw.battery_60;
-            case 40: return R.raw.battery_40;
-            case 20: return R.raw.battery_20;
-            case 10: return R.raw.battery_10;
-            case 5:  return R.raw.battery_5;
-            default: return 0;
-        }
+        });
+        mBatteryMonitor.start();
     }
 
     private void playBatteryVoice(final int resId) {

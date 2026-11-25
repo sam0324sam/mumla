@@ -12,7 +12,6 @@ import android.location.LocationListener;
 import android.location.LocationManager;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
-import android.os.BatteryManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -483,20 +482,11 @@ public class GpsBeaconManager {
     }
 
     private void readInitialBatterySnapshot() {
-        try {
-            Intent statusIntent = mContext.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-            if (statusIntent != null) {
-                int level = statusIntent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
-                int scale = statusIntent.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
-                int status = statusIntent.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
-                if (scale <= 0) scale = 100;
-                if (level >= 0) {
-                    mLatestBatteryPercent = Math.max(0, Math.min(100, (int) ((level / (float) scale) * 100)));
-                }
-                mLatestIsCharging = (status == BatteryManager.BATTERY_STATUS_CHARGING
-                        || status == BatteryManager.BATTERY_STATUS_FULL);
-            }
-        } catch (Exception ignored) {}
+        BatteryMonitor.Snapshot snap = BatteryMonitor.readSnapshot(mContext);
+        if (snap != null) {
+            mLatestBatteryPercent = snap.percent;
+            mLatestIsCharging = snap.isCharging;
+        }
     }
 
     private void performLocationSample(boolean forceFreshGps, String customReasonTag) {

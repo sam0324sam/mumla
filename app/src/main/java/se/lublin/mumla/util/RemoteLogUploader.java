@@ -1,11 +1,8 @@
 package se.lublin.mumla.util;
 
 import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
-import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -37,6 +34,7 @@ import se.lublin.humla.model.Server;
 import se.lublin.mumla.BuildConfig;
 import se.lublin.mumla.Settings;
 import se.lublin.mumla.db.MumlaSQLiteDatabase;
+import se.lublin.mumla.service.BatteryMonitor;
 import se.lublin.mumla.service.GpsBeaconManager;
 
 /**
@@ -134,7 +132,13 @@ public final class RemoteLogUploader {
         sb.append("Display: ").append(dm.widthPixels).append('x').append(dm.heightPixels)
                 .append(" @").append(dm.densityDpi).append("dpi")
                 .append(" | clarity=").append(DisplayClarityHelper.isClarityModeEnabled(context)).append('\n');
-        sb.append("Battery: ").append(readBatteryPercent(context)).append("%\n");
+        BatteryMonitor.Snapshot bat = BatteryMonitor.readSnapshot(context);
+        if (bat != null) {
+            sb.append("Battery: ").append(bat.percent).append("% (").append(bat.voltageMv).append("mV, charging=")
+                    .append(bat.isCharging).append(")\n");
+        } else {
+            sb.append("Battery: -1%\n");
+        }
         sb.append("User: ").append(resolveUsername(context)).append('\n');
         sb.append("\n--- RECENT LOGCAT ---\n");
 
@@ -280,21 +284,6 @@ public final class RemoteLogUploader {
             }
         }
         return baos.toByteArray();
-    }
-
-    private static int readBatteryPercent(@NonNull Context context) {
-        try {
-            Intent intent = context.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-            if (intent != null) {
-                int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
-                int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
-                if (level >= 0 && scale > 0) {
-                    return (level * 100) / scale;
-                }
-            }
-        } catch (Exception ignored) {
-        }
-        return -1;
     }
 
     public static boolean isNetworkAvailable(@NonNull Context context) {
