@@ -67,7 +67,8 @@ public class GpsBeaconManager {
     private static final String TAG = "GpsBeaconManager";
 
     public static final long BEACON_INTERVAL_MS = 5 * 60 * 1000L; // 5 minutes (moving / normal)
-    public static final long STATIONARY_OUTDOOR_INTERVAL_MS = 10 * 60 * 1000L; // 10 minutes when stationary on 4G
+    public static final long STATIONARY_OUTDOOR_INTERVAL_MS = 10 * 60 * 1000L; // 10 minutes when stationary
+    public static final long STATIONARY_WIFI_DEEP_INTERVAL_MS = 30 * 60 * 1000L; // 30 minutes when stationary on Wi-Fi with unchanged battery
     public static final long LOW_BATTERY_INTERVAL_MS = 15 * 60 * 1000L; // 15 minutes when battery <= 20%
     public static final long CRITICAL_BATTERY_INTERVAL_MS = 30 * 60 * 1000L; // 30 minutes when battery <= 10%
     public static final long MAX_COLD_BACKOFF_INTERVAL_MS = 15 * 60 * 1000L; // 15 min max indoor backoff
@@ -119,6 +120,8 @@ public class GpsBeaconManager {
 
     private volatile int mLatestBatteryPercent = 100;
     private volatile boolean mLatestIsCharging = false;
+    private volatile int mLastReportedBatteryPercent = -1;
+    private volatile boolean mLastReportedIsCharging = false;
 
     private volatile boolean mFixInProgress = false;
     private LocationListener mActiveListener;
@@ -194,7 +197,13 @@ public class GpsBeaconManager {
         if (mLastAccurateLocation == null && mConsecutiveColdFailures > 0) {
             return Math.min(BEACON_INTERVAL_MS * (mConsecutiveColdFailures + 1), MAX_COLD_BACKOFF_INTERVAL_MS);
         }
-        if (mOutdoorStationary || mWifiStationary) {
+        if (mWifiStationary) {
+            boolean batterySteady = mLastReportedBatteryPercent >= 0
+                    && Math.abs(mLatestBatteryPercent - mLastReportedBatteryPercent) < 2
+                    && mLatestIsCharging == mLastReportedIsCharging;
+            return batterySteady ? STATIONARY_WIFI_DEEP_INTERVAL_MS : STATIONARY_OUTDOOR_INTERVAL_MS;
+        }
+        if (mOutdoorStationary) {
             return STATIONARY_OUTDOOR_INTERVAL_MS;
         }
         return BEACON_INTERVAL_MS;
@@ -792,6 +801,8 @@ public class GpsBeaconManager {
             String htmlMessage = formatSingleRecordHtml(record);
             // Plan 1: Only update user comment (zero chat spam, Murmur allows without admin permissions)
             mService.setUserComment(selfSession, htmlMessage);
+            mLastReportedBatteryPercent = record.batteryPercent;
+            mLastReportedIsCharging = record.isCharging;
             Log.i(TAG, "Flushed GPS beacon for " + record.userName + " (" + record.sourceTag + ", " + record.batteryPercent + "%) to User Comment.");
         } catch (Exception e) {
             Log.w(TAG, "Failed updating user comment, restoring to queue: " + e.getMessage());

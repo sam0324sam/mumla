@@ -32,7 +32,9 @@ import androidx.appcompat.widget.PopupMenu;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import se.lublin.humla.model.Server;
 import se.lublin.mumla.R;
@@ -41,10 +43,24 @@ import se.lublin.mumla.R;
  * Created by andrew on 05/05/14.
  */
 public abstract class ServerAdapter<E extends Server> extends ArrayAdapter<E> {
-    private static final int MAX_ACTIVE_PINGS = 50;
+    // Shared bounded executor with core timeout so idle server-ping threads shrink to 0 (prevents thread leaks)
+    private static final ExecutorService SHARED_PING_EXECUTOR = createSharedPingExecutor();
+
+    private static ExecutorService createSharedPingExecutor() {
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                2, 4, 15L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<Runnable>(),
+                r -> {
+                    Thread t = new Thread(r, "ServerPingWorker");
+                    t.setDaemon(true);
+                    return t;
+                }
+        );
+        executor.allowCoreThreadTimeOut(true);
+        return executor;
+    }
 
     private ConcurrentHashMap<Server, ServerInfoResponse> mInfoResponses = new ConcurrentHashMap<Server, ServerInfoResponse>();
-    private ExecutorService mPingExecutor = Executors.newFixedThreadPool(MAX_ACTIVE_PINGS);
     private int mViewResource;
 
     public ServerAdapter(Context context, int viewResource, List<E> servers) {
@@ -124,7 +140,7 @@ public abstract class ServerAdapter<E extends Server> extends ArrayAdapter<E> {
                     notifyDataSetChanged();
                 }
             };
-            task.executeOnExecutor(mPingExecutor, server);
+            task.executeOnExecutor(SHARED_PING_EXECUTOR, server);
         }
 
         return view;
