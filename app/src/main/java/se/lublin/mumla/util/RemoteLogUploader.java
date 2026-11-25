@@ -27,13 +27,17 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.zip.GZIPOutputStream;
 
+import se.lublin.humla.model.Server;
 import se.lublin.mumla.BuildConfig;
 import se.lublin.mumla.Settings;
+import se.lublin.mumla.db.MumlaSQLiteDatabase;
+import se.lublin.mumla.service.GpsBeaconManager;
 
 /**
  * Uploads compressed device logs or pending crash reports to the user's NAS hub
@@ -131,7 +135,7 @@ public final class RemoteLogUploader {
                 .append(" @").append(dm.densityDpi).append("dpi")
                 .append(" | clarity=").append(DisplayClarityHelper.isClarityModeEnabled(context)).append('\n');
         sb.append("Battery: ").append(readBatteryPercent(context)).append("%\n");
-        sb.append("User: ").append(Settings.getInstance(context).getDefaultUsername()).append('\n');
+        sb.append("User: ").append(resolveUsername(context)).append('\n');
         sb.append("\n--- RECENT LOGCAT ---\n");
 
         Process proc = null;
@@ -156,6 +160,64 @@ public final class RemoteLogUploader {
         return sb.toString();
     }
 
+    /**
+     * Resolves the best available device/user identifier for log headers and filenames:
+     * 1. Currently connected Mumble session username
+     * 2. First configured non-default server username from MumlaSQLiteDatabase
+     * 3. Default username from Settings
+     */
+    @NonNull
+    public static String resolveUsername(@NonNull Context context) {
+        try {
+            String active = GpsBeaconManager.getInstance(context).getConnectedUserName();
+            if (active != null && !active.trim().isEmpty()) {
+                return active.trim();
+            }
+        } catch (Exception ignored) {
+        }
+
+        String defaultName = "";
+        try {
+            defaultName = Settings.getInstance(context).getDefaultUsername();
+            if (defaultName == null) defaultName = "";
+        } catch (Exception ignored) {
+        }
+
+        MumlaSQLiteDatabase db = null;
+        try {
+            db = new MumlaSQLiteDatabase(context.getApplicationContext());
+            db.open();
+            List<Server> servers = db.getServers();
+            String firstNonEmpty = null;
+            if (servers != null) {
+                for (Server server : servers) {
+                    if (server == null || server.getUsername() == null) continue;
+                    String u = server.getUsername().trim();
+                    if (u.isEmpty()) continue;
+                    if (firstNonEmpty == null) {
+                        firstNonEmpty = u;
+                    }
+                    if (!u.equals(defaultName) && !"Mumla_User".equals(u)) {
+                        return u;
+                    }
+                }
+            }
+            if (firstNonEmpty != null) {
+                return firstNonEmpty;
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (db != null) {
+                try {
+                    db.close();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+
+        return !defaultName.trim().isEmpty() ? defaultName.trim() : "Mumla_User";
+    }
+
     private static boolean postGzipLog(@NonNull Context context,
                                        @NonNull String hubBaseUrl,
                                        @NonNull String hubToken,
@@ -164,7 +226,7 @@ public final class RemoteLogUploader {
         String endpoint = trimTrailingSlash(hubBaseUrl) + "/log";
         byte[] gzBytes = gzip(rawBytes);
 
-        String deviceTag = Build.MODEL + "_" + Settings.getInstance(context).getDefaultUsername();
+        String deviceTag = Build.MODEL + "_" + resolveUsername(context);
         HttpURLConnection conn = null;
         try {
             conn = (HttpURLConnection) new URL(endpoint).openConnection();

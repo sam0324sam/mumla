@@ -220,6 +220,7 @@ public class MumlaService extends HumlaService implements
     private BroadcastReceiver mBatteryReceiver;
     private int mLastAnnouncedBatteryThreshold = -1;
     private boolean mBatteryMonitorInitialized = false;
+    private boolean mWasCharging = false;
     private int mPendingBatteryResId = 0;
 
     // Time-Out Timer (TOT 60s)
@@ -1454,25 +1455,37 @@ public class MumlaService extends HumlaService implements
         registerReceiver(mBatteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
     }
 
+    private int computeBatteryBaselineThreshold(int percent) {
+        int baseline = -1;
+        for (int t : BATTERY_THRESHOLDS) {
+            if (percent <= t) {
+                baseline = t;
+            }
+        }
+        return baseline;
+    }
+
     private void handleBatteryUpdate(int percent, boolean isCharging) {
         GpsBeaconManager.getInstance(this).updateBatteryStatus(percent, isCharging);
 
         if (!mBatteryMonitorInitialized) {
             mBatteryMonitorInitialized = true;
-            for (int t : BATTERY_THRESHOLDS) {
-                if (percent <= t) {
-                    mLastAnnouncedBatteryThreshold = t;
-                }
-            }
+            mWasCharging = isCharging;
+            mLastAnnouncedBatteryThreshold = computeBatteryBaselineThreshold(percent);
             Log.i(TAG, "Battery monitor initialized: " + percent + "%, charging=" + isCharging + ", baseThreshold=" + mLastAnnouncedBatteryThreshold);
             return;
         }
 
         if (isCharging) {
-            if (mLastAnnouncedBatteryThreshold != -1 && percent > mLastAnnouncedBatteryThreshold + 3) {
-                mLastAnnouncedBatteryThreshold = -1;
-            }
+            mWasCharging = true;
             mPendingBatteryResId = 0;
+            return;
+        }
+
+        if (mWasCharging) {
+            mWasCharging = false;
+            mLastAnnouncedBatteryThreshold = computeBatteryBaselineThreshold(percent);
+            Log.i(TAG, "Battery unplugged at " + percent + "%, re-baselined threshold=" + mLastAnnouncedBatteryThreshold);
             return;
         }
 

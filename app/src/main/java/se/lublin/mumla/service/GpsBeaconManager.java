@@ -216,7 +216,9 @@ public class GpsBeaconManager {
             Log.i(TAG, "Periodic beacon tick triggered (coldFailures=" + mConsecutiveColdFailures
                     + ", stationary=" + (mOutdoorStationary || mWifiStationary) + ", bat=" + mLatestBatteryPercent + "%).");
             performLocationSample(false, null);
-            mMainHandler.postDelayed(this, computeNextBeaconIntervalMs());
+            long nextIntervalMs = computeNextBeaconIntervalMs();
+            Log.i(TAG, "Next periodic beacon scheduled in " + (nextIntervalMs / 60000L) + "m.");
+            mMainHandler.postDelayed(this, nextIntervalMs);
         }
     };
 
@@ -505,7 +507,7 @@ public class GpsBeaconManager {
                 && currentBssid.equals(mLastFixBssid)) {
             mWifiStationary = true;
             String tag = customReasonTag != null ? customReasonTag : "定點快取";
-            Log.i(TAG, "Stationary Wi-Fi BSSID match (" + currentBssid + "), skipping hardware GPS (backing off to 10m).");
+            Log.i(TAG, "Stationary Wi-Fi BSSID match (" + currentBssid + "), skipping hardware GPS.");
             onLocationResolved(
                     mLastAccurateLocation.getLatitude(),
                     mLastAccurateLocation.getLongitude(),
@@ -1229,6 +1231,18 @@ public class GpsBeaconManager {
                 mPrefs.edit().putString(KEY_ROSTER_MAP, arr.toString()).apply();
             } catch (Exception ignored) {}
         });
+    }
+
+    public String getConnectedUserName() {
+        if (mService != null) {
+            try {
+                IUser user = mService.getSessionUser();
+                if (user != null && user.getName() != null && !user.getName().trim().isEmpty()) {
+                    return user.getName().trim();
+                }
+            } catch (Exception ignored) {}
+        }
+        return null;
     }
 
     private String resolveSelfUserName() {

@@ -58,6 +58,7 @@ public final class CrashLogHandler implements Thread.UncaughtExceptionHandler {
             pw.println("App: " + BuildConfig.VERSION_NAME + " (" + BuildConfig.GIT_SHA + ")");
             pw.println("Device: " + Build.MANUFACTURER + " " + Build.MODEL
                     + " (Android " + Build.VERSION.RELEASE + " / SDK " + Build.VERSION.SDK_INT + ")");
+            pw.println("User: " + RemoteLogUploader.resolveUsername(mAppContext));
             pw.println("Thread: " + t.getName());
             pw.println();
             e.printStackTrace(pw);

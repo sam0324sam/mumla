@@ -14,14 +14,18 @@ import android.util.Log;
  */
 public class PttSoundManager {
     private static final String TAG = "PttSoundManager";
-    private static final int SAMPLE_RATE = 16000;
+    // Match msm8909/msm8916 native 48kHz hardware backend to avoid 16kHz HAL direct-output fallback (-61)
+    private static final int SAMPLE_RATE = 48000;
 
-    // Hot-path resident tracks (zero-latency)
+    // Hot-path resident tracks (zero-latency) and backing PCM buffers for auto-recovery after HAL invalidation
+    private short[] mPermitSamples;
+    private short[] mBusySamples;
+    private short[] mReleaseSamples;
     private AudioTrack mPermitTrack;
     private AudioTrack mBusyTrack;
     private AudioTrack mReleaseTrack;
 
-    // Infrequent tones stored as lightweight PCM arrays (~15KB total) and played via a single shared track
+    // Infrequent tones stored as lightweight PCM arrays and played via a single shared track
     private short[] mLockSamples;
     private short[] mUnlockAckSamples;
     private short[] mTotWarningSamples;
@@ -42,16 +46,16 @@ public class PttSoundManager {
     private void initTracks() {
         try {
             // 1. Permit Tone (Motorola / DMR style: 900Hz 50ms + 1200Hz 50ms)
-            short[] permitSamples = generateDualTone(900, 50, 1200, 50, PERMIT_TONE_AMPLITUDE);
-            mPermitTrack = createTrack(permitSamples);
+            mPermitSamples = generateDualTone(900, 50, 1200, 50, PERMIT_TONE_AMPLITUDE);
+            mPermitTrack = createTrack(mPermitSamples);
 
             // 2. Busy Tone (Commercial LMR/DMR reject bonk: 320Hz 90ms + 30ms silence + 260Hz 120ms)
-            short[] busySamples = generateChirp(320, 90, 30, 260, 120, BUSY_TONE_AMPLITUDE);
-            mBusyTrack = createTrack(busySamples);
+            mBusySamples = generateChirp(320, 90, 30, 260, 120, BUSY_TONE_AMPLITUDE);
+            mBusyTrack = createTrack(mBusySamples);
 
             // 3. Release Tone (PTT release roger: 650Hz 40ms)
-            short[] releaseSamples = generateTone(650, 40, RELEASE_TONE_AMPLITUDE);
-            mReleaseTrack = createTrack(releaseSamples);
+            mReleaseSamples = generateTone(650, 40, RELEASE_TONE_AMPLITUDE);
+            mReleaseTrack = createTrack(mReleaseSamples);
 
             // 4-6. Auxiliary low-frequency tones kept in compact short[] buffers
             mLockSamples = generateChirp(1200, 70, 25, 800, 100, LOCK_TONE_AMPLITUDE);
@@ -150,15 +154,15 @@ public class PttSoundManager {
     }
 
     public synchronized void playPermitTone() {
-        playTrack(mPermitTrack);
+        mPermitTrack = playTrackWithRecovery(mPermitTrack, mPermitSamples);
     }
 
     public synchronized void playBusyTone() {
-        playTrack(mBusyTrack);
+        mBusyTrack = playTrackWithRecovery(mBusyTrack, mBusySamples);
     }
 
     public synchronized void playReleaseTone() {
-        playTrack(mReleaseTrack);
+        mReleaseTrack = playTrackWithRecovery(mReleaseTrack, mReleaseSamples);
     }
 
     public synchronized void playLockTone() {
@@ -190,14 +194,32 @@ public class PttSoundManager {
         }
     }
 
-    private void playTrack(AudioTrack track) {
-        if (track != null) {
-            try {
+    private AudioTrack playTrackWithRecovery(AudioTrack track, short[] samples) {
+        if (samples == null) return track;
+        try {
+            if (track == null || track.getState() != AudioTrack.STATE_INITIALIZED) {
+                releaseTrack(track);
+                track = createTrack(samples);
+            } else {
                 track.stop();
-                track.reloadStaticData();
-                track.play();
-            } catch (Exception e) {
-                Log.e(TAG, "Error playing audio track", e);
+                int reloadResult = track.reloadStaticData();
+                if (reloadResult != AudioTrack.SUCCESS) {
+                    releaseTrack(track);
+                    track = createTrack(samples);
+                }
+            }
+            track.play();
+            return track;
+        } catch (Exception e) {
+            Log.w(TAG, "AudioTrack playback failed (likely HAL invalidation), recreating track", e);
+            releaseTrack(track);
+            try {
+                AudioTrack recreated = createTrack(samples);
+                recreated.play();
+                return recreated;
+            } catch (Exception retryEx) {
+                Log.e(TAG, "Failed to recreate and play audio track", retryEx);
+                return null;
             }
         }
     }
