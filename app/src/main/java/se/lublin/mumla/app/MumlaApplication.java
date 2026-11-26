@@ -42,7 +42,7 @@ public class MumlaApplication extends Application implements SharedPreferences.O
     }
 
     private static void applyLanguage(SharedPreferences preferences) {
-        String language = preferences.getString(PREF_LANGUAGE, "system");
+        String language = preferences.getString(PREF_LANGUAGE, "zh-TW");
         if (language == null || language.equals("system")) {
             setApplicationLocales(getEmptyLocaleList());
         } else {
