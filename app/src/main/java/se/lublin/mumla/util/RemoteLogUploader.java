@@ -139,12 +139,21 @@ public final class RemoteLogUploader {
         } else {
             sb.append("Battery: -1%\n");
         }
-        sb.append("User: ").append(resolveUsername(context)).append('\n');
-        sb.append("\n--- RECENT LOGCAT ---\n");
+        int myPid = android.os.Process.myPid();
+        sb.append("User: ").append(resolveUsername(context)).append(" (pid=").append(myPid).append(")\n");
 
+        sb.append("\n--- MUMLA PROCESS LOGCAT (PID ").append(myPid).append(") ---\n");
+        appendLogcat(sb, "logcat", "-d", "-v", "time", "--pid=" + myPid, "-t", String.valueOf(MAX_LOGCAT_LINES));
+
+        sb.append("\n--- RECENT SYSTEM LOGCAT ---\n");
+        appendLogcat(sb, "logcat", "-d", "-v", "time", "-t", "500");
+        return sb.toString();
+    }
+
+    private static void appendLogcat(@NonNull StringBuilder sb, @NonNull String... command) {
         Process proc = null;
         try {
-            proc = new ProcessBuilder("logcat", "-d", "-v", "time", "-t", String.valueOf(MAX_LOGCAT_LINES))
+            proc = new ProcessBuilder(command)
                     .redirectErrorStream(true)
                     .start();
             try (BufferedReader reader = new BufferedReader(
@@ -161,7 +170,6 @@ public final class RemoteLogUploader {
                 proc.destroy();
             }
         }
-        return sb.toString();
     }
 
     /**
