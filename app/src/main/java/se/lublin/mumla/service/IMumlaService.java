@@ -8,10 +8,6 @@ import se.lublin.humla.IHumlaService;
  * Created by andrew on 28/02/17.
  */
 public interface IMumlaService extends IHumlaService {
-    void setOverlayShown(boolean showOverlay);
-
-    boolean isOverlayShown();
-
     void clearChatNotifications();
 
     void markErrorShown();

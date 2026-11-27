@@ -47,7 +47,6 @@ public class MumlaConnectionNotification {
     private static final int NOTIFICATION_ID = 1;
     private static final String BROADCAST_MUTE = "b_mute";
     private static final String BROADCAST_DEAFEN = "b_deafen";
-    private static final String BROADCAST_OVERLAY = "b_overlay";
 
     private Service mService;
     private OnActionListener mListener;
@@ -66,8 +65,6 @@ public class MumlaConnectionNotification {
                 mListener.onMuteToggled();
             } else if (BROADCAST_DEAFEN.equals(intent.getAction())) {
                 mListener.onDeafenToggled();
-            } else if (BROADCAST_OVERLAY.equals(intent.getAction())) {
-                mListener.onOverlayToggled();
             }
         }
     };
@@ -195,8 +192,6 @@ public class MumlaConnectionNotification {
             muteIntent.setPackage(mService.getPackageName());
             Intent deafenIntent = new Intent(BROADCAST_DEAFEN);
             deafenIntent.setPackage(mService.getPackageName());
-            Intent overlayIntent = new Intent(BROADCAST_OVERLAY);
-            overlayIntent.setPackage(mService.getPackageName());
 
             builder.addAction(R.drawable.ic_action_microphone,
                     mService.getString(R.string.mute), PendingIntent.getBroadcast(mService, 1,
@@ -204,9 +199,6 @@ public class MumlaConnectionNotification {
             builder.addAction(R.drawable.ic_action_audio,
                     mService.getString(R.string.deafen), PendingIntent.getBroadcast(mService, 1,
                             deafenIntent, FLAG_CANCEL_CURRENT | FLAG_IMMUTABLE));
-            builder.addAction(R.drawable.ic_action_channels,
-                    mService.getString(R.string.overlay), PendingIntent.getBroadcast(mService, 2,
-                            overlayIntent, FLAG_CANCEL_CURRENT | FLAG_IMMUTABLE));
         }
 
         Intent channelListIntent = new Intent(mService, MumlaActivity.class);
@@ -228,6 +220,5 @@ public class MumlaConnectionNotification {
     public interface OnActionListener {
         void onMuteToggled();
         void onDeafenToggled();
-        void onOverlayToggled();
     }
 }

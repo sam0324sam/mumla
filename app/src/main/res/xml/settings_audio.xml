@@ -67,15 +67,6 @@
             android:title="@string/pttKey"
             app:iconSpaceReserved="false"/>
 
-        <ListPreference
-            android:defaultValue="none"
-            android:entries="@array/hotCornerNames"
-            android:entryValues="@array/hotCornerValues"
-            android:key="hotCorner"
-            android:summary="@string/hotCornerSum"
-            android:title="@string/hotCorner"
-            app:iconSpaceReserved="false"/>
-
         <CheckBoxPreference
             android:defaultValue="false"
             android:key="ptt_sound"
@@ -149,12 +140,5 @@
             android:summary="@string/echoCancellationMethodSum"
             android:title="@string/echoCancellationMethod"
             app:iconSpaceReserved="false" />
-
-        <CheckBoxPreference
-            android:defaultValue="false"
-            android:key="disableOpus"
-            android:summary="@string/disableOpusSum"
-            android:title="@string/disableOpus"
-            app:iconSpaceReserved="false"/>
     </PreferenceCategory>
 </PreferenceScreen>

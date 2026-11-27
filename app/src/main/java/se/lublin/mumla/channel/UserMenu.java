@@ -18,53 +18,39 @@
 package se.lublin.mumla.channel;
 
 import android.content.Context;
-import android.os.Bundle;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
-import android.widget.EditText;
 
 import androidx.appcompat.widget.PopupMenu;
-import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentManager;
 
-import com.google.android.material.dialog.MaterialAlertDialogBuilder;
-
-import java.util.List;
-
-import se.lublin.humla.model.IChannel;
+import se.lublin.humla.IHumlaSession;
 import se.lublin.humla.model.IUser;
-import se.lublin.humla.net.Permissions;
 import se.lublin.mumla.R;
-import se.lublin.mumla.channel.comment.UserCommentFragment;
-import se.lublin.mumla.service.MumlaService;
-import se.lublin.mumla.util.ModelUtils;
 
 /**
- * Created by andrew on 19/11/15.
+ * Simplified user popup menu (local mute and ignore messages only).
  */
 public class UserMenu implements PermissionsPopupMenu.IOnMenuPrepareListener, PopupMenu.OnMenuItemClickListener {
     private static final String TAG = UserMenu.class.getName();
 
     private final Context mContext;
     private final IUser mUser;
-    private final MumlaService mService;
-    private final FragmentManager mFragmentManager;
+    private final IHumlaSession mService;
     private final IUserLocalStateListener mStateListener;
 
-    public UserMenu(Context context, IUser user, MumlaService service,
+    public UserMenu(Context context, IUser user, IHumlaSession service,
                     FragmentManager fragmentManager, IUserLocalStateListener stateListener) {
         mContext = context;
         mUser = user;
         mService = service;
-        mFragmentManager = fragmentManager;
         mStateListener = stateListener;
     }
 
     @Override
     public void onMenuPrepare(Menu menu, int permissions) {
-        // Use permission data to determine the actions available.
         boolean self;
         try {
             self = mUser.getSession() == mService.getSessionId();
@@ -72,49 +58,8 @@ public class UserMenu implements PermissionsPopupMenu.IOnMenuPrepareListener, Po
             Log.d(TAG, "exception in onMenuPrepare: " + e);
             return;
         }
-        int perms = mService.getPermissions();
-        IChannel channel = mUser.getChannel();
-        if (channel == null) {
-            Log.d(TAG, "mUser.getChannel()==null in onMenuPrepare");
-            return;
-        }
-        int channelPerms = channel.getId() != 0 ? channel.getPermissions() : perms;
-
-        menu.findItem(R.id.context_kick).setVisible(
-                !self && (perms & (Permissions.Kick | Permissions.Ban | Permissions.Write)) > 0);
-        menu.findItem(R.id.context_ban).setVisible(
-                !self && (perms & (Permissions.Ban | Permissions.Write)) > 0);
-        menu.findItem(R.id.context_mute).setVisible(
-                ((channelPerms & (Permissions.Write | Permissions.MuteDeafen)) > 0 &&
-                        (!self || mUser.isMuted() || mUser.isSuppressed())));
-        menu.findItem(R.id.context_deafen).setVisible(
-                ((channelPerms & (Permissions.Write | Permissions.MuteDeafen)) > 0 &&
-                        (!self || mUser.isDeafened())));
-        menu.findItem(R.id.context_priority).setVisible(
-                ((channelPerms & (Permissions.Write | Permissions.MuteDeafen)) > 0));
-        menu.findItem(R.id.context_move).setVisible(
-                !self && (perms & Permissions.Move) > 0);
-        menu.findItem(R.id.context_change_comment).setVisible(self);
-        menu.findItem(R.id.context_reset_comment).setVisible(
-                !self && ((mUser.getComment() != null && !mUser.getComment().isEmpty()) ||
-                        (mUser.getCommentHash() != null)) &&
-                        (perms & (Permissions.Move | Permissions.Write)) > 0);
-        menu.findItem(R.id.context_view_comment).setVisible(
-                (mUser.getComment() != null && !mUser.getComment().isEmpty()) ||
-                        (mUser.getCommentHash() != null));
-        menu.findItem(R.id.context_register).setVisible(mUser.getUserId() < 0 &&
-                (mUser.getHash() != null && !mUser.getHash().isEmpty()) &&
-                (perms & ((self ? Permissions.SelfRegister : Permissions.Register) | Permissions.Write)) > 0);
         menu.findItem(R.id.context_local_mute).setVisible(!self);
         menu.findItem(R.id.context_ignore_messages).setVisible(!self);
-
-        // TODO info
-//            informationItem.enabled = (((perms & (Permissions.Write | Permissions.Register))) > 0 || (channelPermissions & (Permissions.Write | Permissions.Enter)) > 0 || (mUser.getSessionId() == mService.getSessionId()));
-
-        // Highlight toggles
-        menu.findItem(R.id.context_mute).setChecked(mUser.isMuted() || mUser.isSuppressed());
-        menu.findItem(R.id.context_deafen).setChecked(mUser.isDeafened());
-        menu.findItem(R.id.context_priority).setChecked(mUser.isPrioritySpeaker());
         menu.findItem(R.id.context_local_mute).setChecked(mUser.isLocalMuted());
         menu.findItem(R.id.context_ignore_messages).setChecked(mUser.isLocalIgnored());
     }
@@ -122,72 +67,16 @@ public class UserMenu implements PermissionsPopupMenu.IOnMenuPrepareListener, Po
     @Override
     public boolean onMenuItemClick(final MenuItem menuItem) {
         int itemId = menuItem.getItemId();
-        if (itemId == R.id.context_ban || itemId == R.id.context_kick) {
-            final EditText reasonField = new EditText(mContext);
-            reasonField.setHint(R.string.hint_reason);
-            new MaterialAlertDialogBuilder(mContext)
-                    .setTitle(R.string.user_menu_kick)
-                    .setView(reasonField)
-                    .setPositiveButton(R.string.user_menu_kick, (dialog, which) ->
-                            mService.kickBanUser(mUser.getSession(), reasonField.getText().toString(), menuItem.getItemId() == R.id.context_ban))
-                    .setNegativeButton(android.R.string.cancel, null)
-                    .show();
-        } else if (itemId == R.id.context_mute) {
-            mService.setMuteDeafState(mUser.getSession(), !(mUser.isMuted() || mUser.isSuppressed()), mUser.isDeafened());
-        } else if (itemId == R.id.context_deafen) {
-            mService.setMuteDeafState(mUser.getSession(), mUser.isMuted(), !mUser.isDeafened());
-        } else if (itemId == R.id.context_move) {
-            showChannelMoveDialog();
-        } else if (itemId == R.id.context_priority) {
-            mService.setPrioritySpeaker(mUser.getSession(), !mUser.isPrioritySpeaker());
-        } else if (itemId == R.id.context_local_mute) {
+        if (itemId == R.id.context_local_mute) {
             mUser.setLocalMuted(!mUser.isLocalMuted());
             mStateListener.onLocalUserStateUpdated(mUser);
+            return true;
         } else if (itemId == R.id.context_ignore_messages) {
             mUser.setLocalIgnored(!mUser.isLocalIgnored());
             mStateListener.onLocalUserStateUpdated(mUser);
-        } else if (itemId == R.id.context_change_comment) {
-            showUserComment(true);
-        } else if (itemId == R.id.context_view_comment) {
-            showUserComment(false);
-        } else if (itemId == R.id.context_reset_comment) {
-            new MaterialAlertDialogBuilder(mContext)
-                    .setMessage(mContext.getString(R.string.confirm_reset_comment, mUser.getName()))
-                    .setPositiveButton(R.string.confirm, (dialog, which) ->
-                            mService.setUserComment(mUser.getSession(), ""))
-                    .setNegativeButton(android.R.string.cancel, null)
-                    .show();
-//        } else if (itemId == R.id.context_info) {
-        } else if (itemId == R.id.context_register) {
-            mService.registerUser(mUser.getSession());
-        } else {
-            return false;
+            return true;
         }
-        return true;
-    }
-
-    private void showUserComment(final boolean edit) {
-        Bundle args = new Bundle();
-        args.putInt("session", mUser.getSession());
-        args.putString("comment", mUser.getComment());
-        args.putBoolean("editing", edit);
-        UserCommentFragment fragment = (UserCommentFragment) Fragment.instantiate(mContext, UserCommentFragment.class.getName(), args);
-        fragment.show(mFragmentManager, UserCommentFragment.class.getName());
-    }
-
-    private void showChannelMoveDialog() {
-        final List<IChannel> channels = ModelUtils.getChannelList(mService.getRootChannel());
-        final CharSequence[] channelNames = new CharSequence[channels.size()];
-        for (int i = 0; i < channels.size(); i++) {
-            channelNames[i] = channels.get(i).getName();
-        }
-        new MaterialAlertDialogBuilder(mContext)
-                .setTitle(R.string.user_menu_move)
-                .setItems(channelNames, (dialog, which) -> {
-                    IChannel channel = channels.get(which);
-                    mService.moveUserToChannel(mUser.getSession(), channel.getId());
-                })
-                .show();
+        return false;
     }
 
     public void showPopup(View anchor) {
@@ -196,9 +85,6 @@ public class UserMenu implements PermissionsPopupMenu.IOnMenuPrepareListener, Po
         popupMenu.show();
     }
 
-    /**
-     * A listener notified whenever the user's local state changes.
-     */
     public interface IUserLocalStateListener {
         void onLocalUserStateUpdated(IUser user);
     }

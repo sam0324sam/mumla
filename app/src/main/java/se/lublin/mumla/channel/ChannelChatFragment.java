@@ -52,23 +52,10 @@ import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
 import android.widget.EditText;
 import android.widget.ImageButton;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.TextView;
-import android.widget.Toast;
 
-import androidx.activity.result.ActivityResultLauncher;
-import androidx.activity.result.contract.ActivityResultContracts.GetContent;
-import androidx.activity.result.contract.ActivityResultContracts.RequestPermission;
-import androidx.exifinterface.media.ExifInterface;
-
-import com.google.android.material.dialog.MaterialAlertDialogBuilder;
-
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.net.URLEncoder;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -88,9 +75,7 @@ import se.lublin.humla.util.HumlaObserver;
 import se.lublin.humla.util.IHumlaObserver;
 import se.lublin.mumla.R;
 import se.lublin.mumla.service.IChatMessage;
-import se.lublin.mumla.util.BitmapUtils;
 import se.lublin.mumla.util.HumlaServiceFragment;
-import se.lublin.mumla.util.MumbleImageGetter;
 
 public class ChannelChatFragment extends HumlaServiceFragment implements ChatTargetProvider.OnChatTargetSelectedListener {
     private static final String TAG = ChannelChatFragment.class.getName();
@@ -139,10 +124,7 @@ public class ChannelChatFragment extends HumlaServiceFragment implements ChatTar
     private EditText mChatTextEdit;
     private ImageButton mSendButton;
     private ChatTargetProvider mTargetProvider;
-    ActivityResultLauncher<String> imagePicker =
-            registerForActivityResult(new GetContent(), this::onImagePicked);
-    private final ActivityResultLauncher<String> readPermissionRequester =
-            registerForActivityResult(new RequestPermission(), this::onReadPermissionGranted);
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -177,21 +159,6 @@ public class ChannelChatFragment extends HumlaServiceFragment implements ChatTar
         View view = inflater.inflate(R.layout.fragment_chat, container, false);
         mChatList = view.findViewById(R.id.chat_list);
         mChatTextEdit = view.findViewById(R.id.chatTextEdit);
-
-        ImageButton ImageSendButton = view.findViewById(R.id.chatImageSend);
-        ImageSendButton.setOnClickListener(buttonView -> {
-            // Android <= 12 (SDK 32) needs extra permission
-            if (SDK_INT <= Build.VERSION_CODES.S_V2) {
-                if (checkSelfPermission(requireContext(), READ_EXTERNAL_STORAGE) != PERMISSION_GRANTED) {
-                    readPermissionRequester.launch(READ_EXTERNAL_STORAGE);
-                } else {
-                    // Reaching here once app has gotten hold of the permission
-                    imagePicker.launch("image/*");
-                }
-            } else {
-                imagePicker.launch("image/*");
-            }
-        });
 
         mSendButton = view.findViewById(R.id.chatTextSend);
         mSendButton.setOnClickListener(this::sendMessageFromEditor);
@@ -292,118 +259,6 @@ public class ChannelChatFragment extends HumlaServiceFragment implements ChatTar
                 }
             });
         }
-    }
-
-    private void onReadPermissionGranted(Boolean isGranted) {
-        if (isGranted) {
-            imagePicker.launch("image/*");
-        } else {
-            Toast.makeText(requireContext(), "Permission denied to read storage", Toast.LENGTH_LONG).show();
-        }
-    }
-
-    private void onImagePicked(Uri uri) {
-        if (uri == null) {
-            return;
-        }
-        if (getService() == null || !getService().isConnected()) {
-            return;
-        }
-
-        // We don't fail on errors when getting orientation
-        boolean flipped = false;
-        int rotationDeg = 0;
-        try (InputStream imageStream = requireContext().getContentResolver().openInputStream(uri)) {
-            if (imageStream == null) {
-                Log.w(TAG, "openInputStream(uri) failed for orientation");
-            } else {
-                ExifInterface exif = new ExifInterface(imageStream);
-                flipped = exif.isFlipped();
-                rotationDeg = exif.getRotationDegrees();
-            }
-        } catch (IOException e) {
-            Log.w(TAG, "exception when getting orientation: " + e);
-        }
-        Log.d(TAG, "flipped:" + flipped + " rotationDeg:" + rotationDeg);
-
-        InputStream imageStream;
-        try {
-            imageStream = requireContext().getContentResolver().openInputStream(uri);
-            if (imageStream == null) {
-                Log.w(TAG, "openInputStream(uri) failed");
-                return;
-            }
-        } catch (IOException e) {
-            Log.w(TAG, "exception when opening stream: " + e);
-            return;
-        }
-
-        Bitmap bitmap = BitmapFactory.decodeStream(imageStream);
-        if (bitmap == null) {
-            Log.w(TAG, "decode to bitmap failed");
-            return;
-        }
-
-        if (flipped || rotationDeg > 0) {
-            Matrix matrix = new Matrix();
-            if (flipped) {
-                // first flip horizontally, following {@link ExifInterface#getRotationDegrees()}
-                matrix.postScale(-1, 1, bitmap.getWidth() / 2f, bitmap.getHeight() / 2f);
-            }
-            if (rotationDeg > 0) {
-                matrix.postRotate(rotationDeg);
-            }
-            bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(),
-                    matrix, false);
-        }
-
-        Bitmap resized = BitmapUtils.resizeKeepingAspect(bitmap, 600, 400);
-
-        ImageView preview = new ImageView(requireContext());
-        preview.setImageBitmap(resized);
-        preview.setAdjustViewBounds(true);
-        preview.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        preview.setMaxHeight(Resources.getSystem().getDisplayMetrics().heightPixels / 3);
-        new MaterialAlertDialogBuilder(requireContext())
-                .setMessage(R.string.image_confirm_send)
-                .setPositiveButton(android.R.string.ok, (dlg, which) -> onImageConfirmed(resized))
-                .setNegativeButton(android.R.string.cancel, null)
-                .setView(preview)
-                .create()
-                .show();
-    }
-
-    private void onImageConfirmed(Bitmap resized) {
-        int maxSize = getService().HumlaSession().getServerSettings().getImageMessageLength();
-
-        // Lower the quality, compressing image harder until it fits
-        int quality = 97;
-        byte[] compressed;
-        do {
-            ByteArrayOutputStream stream = new ByteArrayOutputStream();
-            if (!resized.compress(Bitmap.CompressFormat.JPEG, quality, stream)) {
-                Log.w(TAG, "compress failed, quality==" + quality);
-            } else {
-                compressed = stream.toByteArray();
-                // Account for the base64 overhead
-                if (4 * (compressed.length / 3) + 4 < maxSize || maxSize == 0) {
-                    break;
-                } else {
-                    Log.d(TAG, "compress(quality==" + quality + ") >= " + maxSize + " bytes");
-                }
-            }
-            compressed = null;
-            quality -= 10;
-        } while (quality > 0);
-
-        if (compressed == null) {
-            Log.w(TAG, "all compress attempts failed");
-            return;
-        }
-
-        String imageStr = Base64.encodeToString(compressed, Base64.NO_WRAP);
-        String encoded = URLEncoder.encode(imageStr);
-        sendMessage("<img src=\"data:image/jpeg;base64," + encoded + "\"/>");
     }
 
     /**
@@ -527,14 +382,12 @@ public class ChannelChatFragment extends HumlaServiceFragment implements ChatTar
     }
 
     private static class ChannelChatAdapter extends ArrayAdapter<IChatMessage> {
-        private final MumbleImageGetter mImageGetter;
         private final IHumlaService mService;
         private final DateFormat mDateFormat;
 
         public ChannelChatAdapter(Context context, IHumlaService service, List<IChatMessage> messages) {
             super(context, 0, new ArrayList<>(messages));
             mService = service;
-            mImageGetter = new MumbleImageGetter(context);
             mDateFormat = SimpleDateFormat.getTimeInstance();
         }
 
@@ -597,7 +450,7 @@ public class ChannelChatFragment extends HumlaServiceFragment implements ChatTar
                 }
             });
             timeText.setText(mDateFormat.format(new Date(message.getReceivedTime())));
-            messageText.setText(Html.fromHtml(message.getBody(), mImageGetter, null));
+            messageText.setText(Html.fromHtml(message.getBody(), null, null));
             messageText.setMovementMethod(LinkMovementMethod.getInstance());
 
             return v;

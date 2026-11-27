@@ -31,7 +31,6 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
-import android.speech.tts.TextToSpeech;
 import android.util.Log;
 import android.widget.Toast;
 
@@ -92,32 +91,14 @@ public class MumlaService extends HumlaService implements
         mMessageLog.add(msg);
     }
 
-    private MumlaOverlay getOrCreateOverlay() {
-        if (mChannelOverlay == null) {
-            mChannelOverlay = new MumlaOverlay(this);
-        }
-        return mChannelOverlay;
-    }
-
-    private MumlaHotCorner getOrCreateHotCorner() {
-        if (mHotCorner == null) {
-            mHotCorner = new MumlaHotCorner(this, mSettings.getHotCornerGravity(), mHotCornerListener);
-        }
-        return mHotCorner;
-    }
-
     private Settings mSettings;
     private MumlaConnectionNotification mNotification;
     private MumlaMessageNotification mMessageNotification;
     private MumlaReconnectNotification mReconnectNotification;
-    /** Channel view overlay. */
-    private MumlaOverlay mChannelOverlay;
     /** Proximity lock for handset mode. */
     private PowerManager.WakeLock mProximityLock;
     /** Play sound when push to talk key is pressed */
     private boolean mPTTSoundEnabled;
-    /** Try to shorten spoken messages when using TTS */
-    private boolean mShortTtsMessagesEnabled;
     /**
      * True if an error causing disconnection has been dismissed by the user.
      * This should serve as a hint not to bother the user.
@@ -125,36 +106,6 @@ public class MumlaService extends HumlaService implements
     private boolean mErrorShown;
     private List<IChatMessage> mMessageLog;
     private boolean mSuppressNotifications;
-
-    private TextToSpeech mTTS;
-    private String mPendingTtsSpeech;
-    private TextToSpeech.OnInitListener mTTSInitListener = new TextToSpeech.OnInitListener() {
-        @Override
-        public void onInit(int status) {
-            if (status == TextToSpeech.ERROR) {
-                logWarning(getString(R.string.tts_failed));
-                mPendingTtsSpeech = null;
-            } else if (status == TextToSpeech.SUCCESS && mPendingTtsSpeech != null && mTTS != null) {
-                String pending = mPendingTtsSpeech;
-                mPendingTtsSpeech = null;
-                mTTS.speak(pending, TextToSpeech.QUEUE_ADD, null);
-            }
-        }
-    };
-
-    /** The view representing the hot corner. */
-    private MumlaHotCorner mHotCorner;
-    private MumlaHotCorner.MumlaHotCornerListener mHotCornerListener = new MumlaHotCorner.MumlaHotCornerListener() {
-        @Override
-        public void onHotCornerDown() {
-            onTalkKeyDown();
-        }
-
-        @Override
-        public void onHotCornerUp() {
-            onTalkKeyUp();
-        }
-    };
 
     private static volatile MumlaService sInstance;
     public static MumlaService getInstance() { return sInstance; }
@@ -322,35 +273,6 @@ public class MumlaService extends HumlaService implements
                 return;
             }
 
-            // Strip HTML tags using lightweight Android built-in parser (Jsoup removed)
-            String rawMsg = message.getMessage();
-            String ttsMessage;
-            if (mShortTtsMessagesEnabled) {
-                ttsMessage = HtmlUtils.shortenLinksInHtml(rawMsg,
-                        hostname -> getString(R.string.chat_message_tts_short_link, hostname));
-            } else {
-                ttsMessage = HtmlUtils.stripHtml(rawMsg);
-            }
-
-            String formattedTtsMessage = getString(R.string.notification_message,
-                    message.getActorName(), ttsMessage);
-
-            // Read if TTS is enabled, the message is less than threshold, is a text message, not deafened, and not a GPS beacon.
-            // Lazily initializes TextToSpeech on first real chat message to avoid binding TTS engine on walkie-talkie boot.
-            if(!isGpsMessage &&
-                    mSettings.isTextToSpeechEnabled() &&
-                    formattedTtsMessage.length() <= TTS_THRESHOLD &&
-                    getSessionUser() != null &&
-                    !getSessionUser().isSelfDeafened()) {
-                if (mTTS == null) {
-                    mPendingTtsSpeech = formattedTtsMessage;
-                    mTTS = new TextToSpeech(MumlaService.this, mTTSInitListener);
-                } else {
-                    mTTS.speak(formattedTtsMessage, TextToSpeech.QUEUE_ADD, null);
-                }
-            }
-
-            // TODO: create a customizable notification sieve
             if (mSettings.isChatNotifyEnabled()) {
                 mMessageNotification.show(message);
             }
@@ -434,23 +356,11 @@ public class MumlaService extends HumlaService implements
         // Register for preference changes
         mSettings = Settings.getInstance(this);
         mPTTSoundEnabled = mSettings.isPttSoundEnabled();
-        mShortTtsMessagesEnabled = mSettings.isShortTextToSpeechMessagesEnabled();
         SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(this);
         preferences.registerOnSharedPreferenceChangeListener(this);
 
-        // Manually set theme to style overlay views
-        // XML <application> theme does NOT do this!
-        setTheme(R.style.Theme_Mumla);
-
         mMessageLog = new ArrayList<>();
         mMessageNotification = new MumlaMessageNotification(MumlaService.this);
-
-        // Lazy-initialize overlay & hot corner only when actually enabled/shown to save RAM on walkie-talkies
-        mChannelOverlay = null;
-        mHotCorner = null;
-
-        // TTS is lazily initialized only when an actual non-GPS chat message needs to be spoken
-        mTTS = null;
 
         // Initialize zero-latency PTT sound synthesizer, voice announcement player & cached ALSA paths
         mPttSoundManager = new PttSoundManager(this::markLocalSoundPlaying);
@@ -563,7 +473,6 @@ public class MumlaService extends HumlaService implements
         }
 
         unregisterObserver(mObserver);
-        if(mTTS != null) mTTS.shutdown();
         mMessageLog = null;
         mMessageNotification.dismiss();
         super.onDestroy();
@@ -583,9 +492,6 @@ public class MumlaService extends HumlaService implements
             setSelfMuteDeafState(mSettings.isMuted(), mSettings.isDeafened());
         }
 
-        if (mSettings.isHotCornerEnabled()) {
-            getOrCreateHotCorner().setShown(true);
-        }
         // Configure proximity sensor
         if (mSettings.isHandsetMode()) {
             setProximitySensorOn(true);
@@ -597,15 +503,6 @@ public class MumlaService extends HumlaService implements
     @Override
     public void onConnectionDisconnected(HumlaException e) {
         super.onConnectionDisconnected(e);
-
-        // Remove overlay if present.
-        if (mChannelOverlay != null) {
-            mChannelOverlay.hide();
-        }
-
-        if (mHotCorner != null) {
-            mHotCorner.setShown(false);
-        }
 
         setProximitySensorOn(false);
 
@@ -626,9 +523,6 @@ public class MumlaService extends HumlaService implements
                 /* Convert input method defined in settings to an integer format used by Humla. */
                 int inputMethod = mSettings.getHumlaInputMethod();
                 changedExtras.putInt(HumlaService.EXTRAS_TRANSMIT_MODE, inputMethod);
-                if (mChannelOverlay != null) {
-                    mChannelOverlay.setPushToTalkShown(inputMethod == Constants.TRANSMIT_PUSH_TO_TALK);
-                }
                 break;
             case Settings.PREF_HANDSET_MODE:
                 setProximitySensorOn(isConnectionEstablished() && mSettings.isHandsetMode());
@@ -638,26 +532,6 @@ public class MumlaService extends HumlaService implements
             case Settings.PREF_THRESHOLD:
                 changedExtras.putFloat(HumlaService.EXTRAS_DETECTION_THRESHOLD,
                         mSettings.getDetectionThreshold());
-                break;
-            case Settings.PREF_HOT_CORNER_KEY:
-                if (mSettings.isHotCornerEnabled()) {
-                    MumlaHotCorner corner = getOrCreateHotCorner();
-                    corner.setGravity(mSettings.getHotCornerGravity());
-                    corner.setShown(isConnectionEstablished());
-                } else if (mHotCorner != null) {
-                    mHotCorner.setShown(false);
-                }
-                break;
-            case Settings.PREF_USE_TTS:
-                if (mTTS == null && mSettings.isTextToSpeechEnabled())
-                    mTTS = new TextToSpeech(this, mTTSInitListener);
-                else if (mTTS != null && !mSettings.isTextToSpeechEnabled()) {
-                    mTTS.shutdown();
-                    mTTS = null;
-                }
-                break;
-            case Settings.PREF_SHORT_TTS_MESSAGES:
-                mShortTtsMessagesEnabled = mSettings.isShortTextToSpeechMessagesEnabled();
                 break;
             case Settings.PREF_AMPLITUDE_BOOST:
                 changedExtras.putFloat(EXTRAS_AMPLITUDE_BOOST,
@@ -738,32 +612,6 @@ public class MumlaService extends HumlaService implements
     }
 
     @Override
-    public void onOverlayToggled() {
-        // Ditch notification shade/panel to make overlay presence/permission request visible.
-        // But on Android 12 that's no longer allowed.
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            Intent close = new Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS);
-            getApplicationContext().sendBroadcast(close);
-        }
-
-        if (mChannelOverlay == null || !mChannelOverlay.isShown()) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                if (!android.provider.Settings.canDrawOverlays(getApplicationContext())) {
-                    Intent showSetting = new Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                            Uri.parse("package:" + getPackageName()));
-                    showSetting.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    startActivity(showSetting);
-                    Toast.makeText(this, R.string.grant_perm_draw_over_apps, Toast.LENGTH_LONG).show();
-                    return;
-                }
-            }
-            getOrCreateOverlay().show();
-        } else {
-            mChannelOverlay.hide();
-        }
-    }
-
-    @Override
     public void onReconnectNotificationDismissed() {
         mErrorShown = true;
     }
@@ -780,20 +628,6 @@ public class MumlaService extends HumlaService implements
             mReconnectNotification = null;
         }
         super.cancelReconnect();
-    }
-
-    @Override
-    public void setOverlayShown(boolean showOverlay) {
-        if (mChannelOverlay == null || !mChannelOverlay.isShown()) {
-            getOrCreateOverlay().show();
-        } else {
-            mChannelOverlay.hide();
-        }
-    }
-
-    @Override
-    public boolean isOverlayShown() {
-        return mChannelOverlay != null && mChannelOverlay.isShown();
     }
 
     @Override
