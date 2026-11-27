@@ -86,6 +86,7 @@ jobs:
           retention-days: 30
 
       - name: Publish rolling dev-latest release
+        if: github.ref == 'refs/heads/master'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
