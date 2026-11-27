@@ -3,8 +3,6 @@ package se.lublin.mumla.service;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.location.Location;
@@ -22,75 +20,49 @@ import androidx.core.content.ContextCompat;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Calendar;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.Date;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
-import se.lublin.humla.model.IChannel;
-import se.lublin.humla.model.IMessage;
 import se.lublin.humla.model.IUser;
 import se.lublin.mumla.Settings;
-import se.lublin.mumla.util.HtmlUtils;
 
 /**
- * Low-power 5-minute GPS beacon manager for walkie-talkie devices.
+ * Lightweight, low-power GPS beacon uploader for ski walkie-talkies.
  *
- * Key power-saving & reliability features:
- * 1. Samples every 5 minutes (plus initial fix & low-battery last-breath events).
- * 2. Stationary Wi-Fi BSSID gating: avoids waking hardware GPS when stationary at the same AP.
- * 3. Concurrent GPS + Network query with strict 8-second timeout to avoid indoor GPS spin drain,
- *    falling back cleanly to last known coordinates or IP geolocation.
- * 4. Size-1 overwrite queue: while offline, overwrites at most 1 pending record in place and
- *    flushes only that single latest record upon reconnection.
- * 5. Server-wide roster cache + staggered auto-summary when a new client (e.g. phone) joins.
+ * Architecture (decoupled from Mumble voice chat):
+ * 1. Samples GPS (with Network fallback) at adaptive intervals:
+ *    - 5 min while moving / skiing
+ *    - 10 min when stationary outdoors
+ *    - 15-30 min on low battery or stationary Wi-Fi
+ * 2. Persists up to 30 unsent track points in SharedPreferences so 4G dead zones on
+ *    chairlifts never lose full-day ski tracks.
+ * 3. HTTP POSTs batched JSON points directly to <hubUrl>/gps with X-Mumla-Token so
+ *    phones can view live markers + full-day tracks on <hubUrl>/map.
  */
 public class GpsBeaconManager {
     private static final String TAG = "GpsBeaconManager";
 
-    public static final long BEACON_INTERVAL_MS = 5 * 60 * 1000L; // 5 minutes (moving / normal)
-    public static final long STATIONARY_OUTDOOR_INTERVAL_MS = 10 * 60 * 1000L; // 10 minutes when stationary
-    public static final long STATIONARY_WIFI_DEEP_INTERVAL_MS = 30 * 60 * 1000L; // 30 minutes when stationary on Wi-Fi with unchanged battery
-    public static final long LOW_BATTERY_INTERVAL_MS = 15 * 60 * 1000L; // 15 minutes when battery <= 20%
-    public static final long CRITICAL_BATTERY_INTERVAL_MS = 30 * 60 * 1000L; // 30 minutes when battery <= 10%
-    public static final long MAX_COLD_BACKOFF_INTERVAL_MS = 15 * 60 * 1000L; // 15 min max indoor backoff
-    public static final long XTRA_INJECTION_INTERVAL_MS = 6 * 3600 * 1000L; // Throttle XTRA/time injection to once per 6h
+    public static final long BEACON_INTERVAL_MS = 5 * 60 * 1000L;
+    public static final long STATIONARY_OUTDOOR_INTERVAL_MS = 10 * 60 * 1000L;
+    public static final long STATIONARY_WIFI_DEEP_INTERVAL_MS = 30 * 60 * 1000L;
+    public static final long LOW_BATTERY_INTERVAL_MS = 15 * 60 * 1000L;
+    public static final long CRITICAL_BATTERY_INTERVAL_MS = 30 * 60 * 1000L;
+    public static final long MAX_COLD_BACKOFF_INTERVAL_MS = 15 * 60 * 1000L;
+    public static final long INITIAL_DELAY_MS = 15 * 1000L;
+    public static final long GPS_FIX_TIMEOUT_MS = 45 * 1000L;
+    public static final long GPS_COLD_FIX_TIMEOUT_MS = 90 * 1000L;
     private static final float STATIONARY_DISTANCE_METERS = 30.0f;
-    public static final long INITIAL_DELAY_MS = 15 * 1000L;      // 15 seconds after start
-    public static final long GPS_FIX_TIMEOUT_MS = 45 * 1000L;    // 45 seconds warm fix timeout
-    public static final long GPS_COLD_FIX_TIMEOUT_MS = 90 * 1000L; // 90 seconds cold fix cap to save battery indoors
-
-    public static final String HEADER_BEACON = "📍 [定位回報]";
-    public static final String HEADER_ROSTER = "📋 【全員最近定位紀錄總表】";
-    public static final String HEADER_CLEAR_USER = "🗑️ [清除定位]";
-
-    private static final String PREFS_NAME = "mumla_gps_beacon_prefs";
-    private static final String KEY_PENDING_OUTGOING = "pending_outgoing_record";
-    private static final String KEY_ROSTER_MAP = "roster_locations_json";
+    private static final int MAX_PENDING_QUEUE = 30;
     private static final String MASKED_BSSID = "02:00:00:00:00:00";
 
-    private static final Pattern BATTERY_PATTERN = Pattern.compile("🔋\\s*(\\d+)%");
-    private static final Pattern ROSTER_BATTERY_PATTERN = Pattern.compile("電量\\s*(\\d+)%");
-    private static final Pattern COORDS_PATTERN = Pattern.compile("maps\\.google\\.com/\\?q=([-+]?\\d+(?:\\.\\d+)?),([-+]?\\d+(?:\\.\\d+)?)");
-    private static final Pattern TIME_AND_SOURCE_PATTERN = Pattern.compile("🕒\\s*(\\d{2}/\\d{2}\\s+\\d{2}:\\d{2}:\\d{2})\\s*\\(([^()]+)\\)");
-    private static final Pattern SOURCE_PATTERN = Pattern.compile("\\(([^()]+)\\)");
+    private static final String PREFS_NAME = "mumla_gps_beacon_prefs";
+    private static final String KEY_PENDING_QUEUE = "pending_gps_points_v2";
 
     private static volatile GpsBeaconManager sInstance;
 
@@ -99,23 +71,17 @@ public class GpsBeaconManager {
     private final Handler mMainHandler;
     private final ScheduledExecutorService mExecutor;
 
-    // Size-1 overwrite queue for offline resilience
-    private volatile LocationRecord mPendingOutgoingRecord;
-    private volatile boolean mHasPersistedPending = false;
-
-    // Persisted roster of last-known locations keyed by username
-    private final Map<String, LocationRecord> mRosterLocations = new ConcurrentHashMap<>();
+    private final Object mQueueLock = new Object();
+    private final List<JSONObject> mPendingQueue = new ArrayList<>();
 
     private MumlaService mService;
     private boolean mStarted = false;
-    private volatile long mSynchronizedAtMs = 0L;
 
     private Location mLastAccurateLocation;
     private String mLastFixBssid;
     private int mConsecutiveColdFailures = 0;
     private boolean mOutdoorStationary = false;
     private boolean mWifiStationary = false;
-    private long mLastXtraInjectionMs = 0L;
 
     private volatile int mLatestBatteryPercent = 100;
     private volatile boolean mLatestIsCharging = false;
@@ -126,106 +92,15 @@ public class GpsBeaconManager {
     private LocationListener mActiveListener;
     private Location mActiveNetworkFix;
     private Runnable mFixTimeoutRunnable;
-    private long mLastRosterBroadcastAtMs = 0L;
-
-    public static class LocationRecord {
-        public String userName;
-        public int batteryPercent;
-        public boolean isCharging;
-        public long timestampMs;
-        public double latitude;
-        public double longitude;
-        public String sourceTag;
-
-        public LocationRecord() {}
-
-        public LocationRecord(String userName, int batteryPercent, boolean isCharging,
-                              long timestampMs, double latitude, double longitude, String sourceTag) {
-            this.userName = userName;
-            this.batteryPercent = batteryPercent;
-            this.isCharging = isCharging;
-            this.timestampMs = timestampMs;
-            this.latitude = latitude;
-            this.longitude = longitude;
-            this.sourceTag = sourceTag;
-        }
-
-        public JSONObject toJson() {
-            JSONObject obj = new JSONObject();
-            try {
-                obj.put("userName", userName != null ? userName : "Unknown");
-                obj.put("batteryPercent", batteryPercent);
-                obj.put("isCharging", isCharging);
-                obj.put("timestampMs", timestampMs);
-                obj.put("latitude", latitude);
-                obj.put("longitude", longitude);
-                obj.put("sourceTag", sourceTag != null ? sourceTag : "定位");
-            } catch (Exception ignored) {}
-            return obj;
-        }
-
-        public static LocationRecord fromJson(JSONObject obj) {
-            if (obj == null) return null;
-            try {
-                if (!obj.has("latitude") || !obj.has("longitude")) return null;
-                return new LocationRecord(
-                        obj.optString("userName", "Unknown"),
-                        obj.optInt("batteryPercent", 0),
-                        obj.optBoolean("isCharging", false),
-                        obj.optLong("timestampMs", System.currentTimeMillis()),
-                        obj.getDouble("latitude"),
-                        obj.getDouble("longitude"),
-                        obj.optString("sourceTag", "定位")
-                );
-            } catch (Exception e) {
-                return null;
-            }
-        }
-    }
-
-    private long computeNextBeaconIntervalMs() {
-        // Low-battery survival mode: prioritize voice PTT battery over GPS polling
-        if (!mLatestIsCharging) {
-            if (mLatestBatteryPercent <= 10) {
-                return CRITICAL_BATTERY_INTERVAL_MS;
-            }
-            if (mLatestBatteryPercent <= 20) {
-                return LOW_BATTERY_INTERVAL_MS;
-            }
-        }
-        if (mLastAccurateLocation == null && mConsecutiveColdFailures > 0) {
-            return Math.min(BEACON_INTERVAL_MS * (mConsecutiveColdFailures + 1), MAX_COLD_BACKOFF_INTERVAL_MS);
-        }
-        if (mWifiStationary) {
-            boolean batterySteady = mLastReportedBatteryPercent >= 0
-                    && Math.abs(mLatestBatteryPercent - mLastReportedBatteryPercent) < 2
-                    && mLatestIsCharging == mLastReportedIsCharging;
-            return batterySteady ? STATIONARY_WIFI_DEEP_INTERVAL_MS : STATIONARY_OUTDOOR_INTERVAL_MS;
-        }
-        if (mOutdoorStationary) {
-            return STATIONARY_OUTDOOR_INTERVAL_MS;
-        }
-        return BEACON_INTERVAL_MS;
-    }
 
     private final Runnable mPeriodicBeaconRunnable = new Runnable() {
         @Override
         public void run() {
             if (!mStarted) return;
-            Log.i(TAG, "Periodic beacon tick triggered (coldFailures=" + mConsecutiveColdFailures
-                    + ", stationary=" + (mOutdoorStationary || mWifiStationary) + ", bat=" + mLatestBatteryPercent + "%).");
             performLocationSample(false, null);
             long nextIntervalMs = computeNextBeaconIntervalMs();
-            Log.i(TAG, "Next periodic beacon scheduled in " + (nextIntervalMs / 60000L) + "m.");
+            Log.i(TAG, "Next GPS sample scheduled in " + (nextIntervalMs / 60000L) + "m.");
             mMainHandler.postDelayed(this, nextIntervalMs);
-        }
-    };
-
-    private final Runnable mRosterBroadcastRunnable = new Runnable() {
-        @Override
-        public void run() {
-            if (!mStarted) return;
-            postRosterSummaryNow();
         }
     };
 
@@ -249,271 +124,82 @@ public class GpsBeaconManager {
             t.setDaemon(true);
             return t;
         });
+        loadPendingQueue();
     }
 
-    /**
-     * Start the 5-minute GPS beacon scheduler and load persisted state.
-     */
     public synchronized void start(MumlaService service) {
         mService = service;
         if (mStarted) {
             return;
         }
         mStarted = true;
-        readInitialBatterySnapshot();
-        loadPersistedState();
-
+        Log.i(TAG, "GpsBeaconManager started (HTTP Hub mode, queued=" + mPendingQueue.size() + ")");
         mMainHandler.removeCallbacks(mPeriodicBeaconRunnable);
         mMainHandler.postDelayed(mPeriodicBeaconRunnable, INITIAL_DELAY_MS);
-        Log.i(TAG, "GpsBeaconManager started (interval=" + (BEACON_INTERVAL_MS / 1000) + "s, loaded roster=" + mRosterLocations.size() + ")");
+        flushPendingQueueAsync();
     }
 
-    /**
-     * Stop periodic sampling and release any active location listener.
-     */
     public synchronized void stop() {
-        if (!mStarted) {
-            return;
-        }
+        if (!mStarted) return;
         mStarted = false;
-        mMainHandler.removeCallbacks(mPeriodicBeaconRunnable);
-        mMainHandler.removeCallbacks(mRosterBroadcastRunnable);
-        cancelActiveFixListener();
+        mMainHandler.removeCallbacksAndMessages(null);
+        cancelActiveFix();
         mService = null;
         Log.i(TAG, "GpsBeaconManager stopped.");
     }
 
+    public void onServerSynchronized() {
+        flushPendingQueueAsync();
+    }
+
     public void updateBatteryStatus(int percent, boolean isCharging) {
-        mLatestBatteryPercent = Math.max(0, Math.min(100, percent));
+        mLatestBatteryPercent = percent;
         mLatestIsCharging = isCharging;
     }
 
-    /**
-     * Trigger an immediate location fix & report (used for low battery 20/10/5% or chat query).
-     */
     public void triggerImmediateBeacon(String reasonTag) {
         if (!mStarted) return;
-        Log.i(TAG, "Immediate beacon triggered: " + reasonTag);
+        Log.i(TAG, "Immediate GPS beacon requested: " + reasonTag);
         mMainHandler.post(() -> performLocationSample(true, reasonTag));
     }
 
-    /**
-     * Called when MumlaService finishes Mumble server synchronization.
-     * Flushes any pending record in the size-1 queue, or runs an initial fix if none exists.
-     */
-    public void onServerSynchronized() {
-        mSynchronizedAtMs = System.currentTimeMillis();
-        mMainHandler.postDelayed(() -> {
-            if (!mStarted) return;
-            // Sync all currently online users' GPS comments immediately on join
-            syncAllOnlineUsersComments();
-
-            if (isCurrentUserAdmin()) {
-                Log.i(TAG, "Logged in as SuperUser: skipping own GPS beacon broadcast.");
-                return;
-            }
-
-            // Restore our own last-known GPS coordinate now that we know our real Mumble username
-            LocationRecord selfPersisted = restoreSelfLocationFromRoster();
-
-            if (mPendingOutgoingRecord != null) {
-                Log.i(TAG, "Server synchronized: flushing queued latest record.");
-                flushPendingRecordIfConnected();
-            } else {
-                // Immediately publish last known coordinate to server UserComment so teammates see it right away
-                if (selfPersisted != null) {
-                    publishRecordToServerCommentOnly(selfPersisted);
-                }
-                Log.i(TAG, "Server synchronized with empty queue: running initial fix.");
-                performLocationSample(false, null);
-            }
-        }, 800L);
-    }
-
-    private LocationRecord restoreSelfLocationFromRoster() {
-        String selfName = resolveSelfUserName();
-        LocationRecord selfRec = mRosterLocations.get(selfName);
-        if (selfRec != null && selfRec.latitude != 0 && selfRec.longitude != 0) {
-            boolean isPeer = "Wi-Fi隊友座標".equals(selfRec.sourceTag) || "網路定位".equals(selfRec.sourceTag);
-            if (!isPeer || Settings.getInstance(mContext).isPeerWifiLocationEnabled()) {
-                if (mLastAccurateLocation == null) {
-                    Location loc = new Location("persisted");
-                    loc.setLatitude(selfRec.latitude);
-                    loc.setLongitude(selfRec.longitude);
-                    loc.setTime(selfRec.timestampMs);
-                    mLastAccurateLocation = loc;
-                    Log.i(TAG, "Restored persisted last-known location for " + selfName + ": " + selfRec.latitude + "," + selfRec.longitude);
-                }
-                return selfRec;
-            }
-        }
-        return null;
-    }
-
-    private void publishRecordToServerCommentOnly(LocationRecord record) {
-        if (record == null || mService == null || !mService.isConnectionEstablished() || isCurrentUserAdmin()) {
-            return;
-        }
+    public String getConnectedUserName() {
         try {
-            int selfSession = mService.getSessionId();
-            String htmlMessage = formatSingleRecordHtml(record);
-            mService.setUserComment(selfSession, htmlMessage);
-            Log.i(TAG, "Published restored last-known GPS beacon for " + record.userName + " to User Comment on join.");
-        } catch (Exception e) {
-            Log.w(TAG, "Failed publishing restored last-known GPS beacon: " + e.getMessage());
-        }
-    }
-
-    private void syncAllOnlineUsersComments() {
-        if (mService == null || !mService.isConnectionEstablished()) {
-            return;
-        }
-        try {
-            IChannel root = mService.getRootChannel();
-            if (root != null) {
-                syncChannelUsersCommentsRecursive(root);
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "Failed syncing online user comments: " + e.getMessage());
-        }
-    }
-
-    private void syncChannelUsersCommentsRecursive(IChannel channel) {
-        if (channel == null) return;
-        List<? extends IUser> users = channel.getUsers();
-        if (users != null) {
-            for (IUser u : users) {
-                if (u == null) continue;
-                if (u.getComment() != null) {
-                    onUserCommentUpdated(u);
-                } else if (u.getCommentHash() != null) {
-                    try {
-                        mService.requestComment(u.getSession());
-                    } catch (Exception ignored) {}
+            if (mService != null && mService.isConnected()) {
+                IUser self = mService.HumlaSession().getSessionUser();
+                if (self != null && self.getName() != null && !self.getName().trim().isEmpty()) {
+                    return self.getName().trim();
                 }
             }
-        }
-        List<? extends IChannel> subs = channel.getSubchannels();
-        if (subs != null) {
-            for (IChannel sub : subs) {
-                syncChannelUsersCommentsRecursive(sub);
+        } catch (Exception ignored) {}
+        try {
+            if (mService != null && mService.getTargetServer() != null) {
+                String u = mService.getTargetServer().getUsername();
+                if (u != null && !u.trim().isEmpty()) return u.trim();
             }
-        }
+        } catch (Exception ignored) {}
+        String def = Settings.getInstance(mContext).getDefaultUsername();
+        return (def != null && !def.trim().isEmpty()) ? def.trim() : "WalkieTalkie";
     }
 
-    /**
-     * Called when a user connects to the server.
-     */
-    public void onUserJoinedServer(IUser joinedUser) {
-        // No action needed; each user updates their own comment and clients maintain local roster cache
-    }
-
-    /**
-     * Called when any user's profile/comment is updated.
-     * Extracts beacon data if present and updates the server-wide roster cache.
-     */
-    public void onUserCommentUpdated(IUser user) {
-        if (user == null || user.getComment() == null) return;
-        String comment = user.getComment();
-        if (comment.contains(HEADER_BEACON)) {
-            String plain = HtmlUtils.stripHtml(comment);
-            LocationRecord parsed = parseSingleBeaconMessage(user.getName(), comment, plain);
-            if (parsed != null) {
-                updateRosterRecord(parsed);
-            }
+    private long computeNextBeaconIntervalMs() {
+        if (!mLatestIsCharging) {
+            if (mLatestBatteryPercent <= 10) return CRITICAL_BATTERY_INTERVAL_MS;
+            if (mLatestBatteryPercent <= 20) return LOW_BATTERY_INTERVAL_MS;
         }
-    }
-
-    /**
-     * Inspects incoming chat messages:
-     * - Updates local roster if it's a beacon message.
-     * - Cancels pending staggered summary if another device already posted the roster summary.
-     * - Responds to "loc" / "?loc" / "定位" text queries.
-     *
-     * @return true if the message is a GPS beacon/summary message (so MumlaService suppresses TTS).
-     */
-    public boolean onIncomingChatMessage(IMessage message) {
-        if (message == null || message.getMessage() == null) {
-            return false;
+        if (mLastAccurateLocation == null && mConsecutiveColdFailures > 0) {
+            return Math.min(BEACON_INTERVAL_MS * (mConsecutiveColdFailures + 1), MAX_COLD_BACKOFF_INTERVAL_MS);
         }
-        String rawHtml = message.getMessage();
-        // Fast path: skip expensive Jsoup DOM parsing for normal chat messages unrelated to GPS
-        boolean hasGpsHeader = rawHtml.contains(HEADER_CLEAR_USER)
-                || rawHtml.contains(HEADER_ROSTER)
-                || rawHtml.contains(HEADER_BEACON);
-        if (!hasGpsHeader && rawHtml.length() > 32) {
-            return false;
+        if (mWifiStationary) {
+            boolean batterySteady = mLastReportedBatteryPercent >= 0
+                    && Math.abs(mLatestBatteryPercent - mLastReportedBatteryPercent) < 2
+                    && mLatestIsCharging == mLastReportedIsCharging;
+            return batterySteady ? STATIONARY_WIFI_DEEP_INTERVAL_MS : STATIONARY_OUTDOOR_INTERVAL_MS;
         }
-        String plain = HtmlUtils.stripHtml(rawHtml);
-
-        if (plain.startsWith(HEADER_CLEAR_USER)) {
-            String target = plain.substring(HEADER_CLEAR_USER.length()).trim();
-            if (!target.isEmpty()) {
-                removeRosterRecordLocal(target);
-                Log.i(TAG, "Purged roster location record via admin command: " + target);
-            }
-            return true;
+        if (mOutdoorStationary) {
+            return STATIONARY_OUTDOOR_INTERVAL_MS;
         }
-
-        if (plain.contains(HEADER_ROSTER)) {
-            mMainHandler.removeCallbacks(mRosterBroadcastRunnable);
-            mLastRosterBroadcastAtMs = System.currentTimeMillis();
-            parseRosterSummaryIntoCache(rawHtml);
-            return true;
-        }
-
-        if (plain.contains(HEADER_BEACON)) {
-            LocationRecord parsed = parseSingleBeaconMessage(message.getActorName(), rawHtml, plain);
-            if (parsed != null) {
-                updateRosterRecord(parsed);
-            }
-            return true;
-        }
-
-        if ("loc".equalsIgnoreCase(plain) || "?loc".equalsIgnoreCase(plain) || "定位".equals(plain)) {
-            mMainHandler.post(() -> {
-                postRosterSummaryNow();
-                triggerImmediateBeacon("手動查詢");
-            });
-            return false;
-        }
-
-        return false;
-    }
-
-    private void readInitialBatterySnapshot() {
-        BatteryMonitor.Snapshot snap = BatteryMonitor.readSnapshot(mContext);
-        if (snap != null) {
-            mLatestBatteryPercent = snap.percent;
-            mLatestIsCharging = snap.isCharging;
-        }
-    }
-
-    private void performLocationSample(boolean forceFreshGps, String customReasonTag) {
-        String currentBssid = getConnectedWifiBssid();
-        if (!forceFreshGps
-                && mLastAccurateLocation != null
-                && currentBssid != null
-                && currentBssid.equals(mLastFixBssid)) {
-            mWifiStationary = true;
-            String tag = customReasonTag != null ? customReasonTag : "定點快取";
-            Log.i(TAG, "Stationary Wi-Fi BSSID match (" + currentBssid + "), skipping hardware GPS.");
-            onLocationResolved(
-                    mLastAccurateLocation.getLatitude(),
-                    mLastAccurateLocation.getLongitude(),
-                    tag,
-                    false
-            );
-            return;
-        }
-
-        mWifiStationary = false;
-        if (!hasLocationPermission()) {
-            Log.w(TAG, "Location permission missing, skipping location sample.");
-            return;
-        }
-
-        requestHardwareOrNetworkFix(customReasonTag);
+        return BEACON_INTERVAL_MS;
     }
 
     private boolean hasLocationPermission() {
@@ -521,126 +207,126 @@ public class GpsBeaconManager {
                 || ContextCompat.checkSelfPermission(mContext, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
     }
 
+    private String getCurrentWifiBssid() {
+        try {
+            WifiManager wm = (WifiManager) mContext.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm == null || !wm.isWifiEnabled()) return null;
+            WifiInfo info = wm.getConnectionInfo();
+            if (info == null) return null;
+            String bssid = info.getBSSID();
+            if (bssid == null || bssid.isEmpty() || MASKED_BSSID.equals(bssid)) return null;
+            return bssid;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     @SuppressLint("MissingPermission")
-    private void requestHardwareOrNetworkFix(String customReasonTag) {
-        LocationManager lm = (LocationManager) mContext.getSystemService(Context.LOCATION_SERVICE);
-        if (lm == null) {
-            Log.w(TAG, "LocationManager not available; skipping location sample.");
+    private void performLocationSample(boolean forceImmediate, String reasonTag) {
+        if (!hasLocationPermission()) {
+            Log.w(TAG, "Location permission missing; skipping GPS sample.");
             return;
         }
+
+        // Stationary Wi-Fi gating: avoid waking GPS hardware indoors on the same AP
+        String bssid = getCurrentWifiBssid();
+        if (!forceImmediate && bssid != null && bssid.equals(mLastFixBssid) && mLastAccurateLocation != null) {
+            mWifiStationary = true;
+            enqueueAndUpload(mLastAccurateLocation, "Wi-Fi靜止", reasonTag);
+            return;
+        }
+        mWifiStationary = false;
 
         if (mFixInProgress) {
-            Log.d(TAG, "Location fix already in progress, skipping duplicate request.");
             return;
         }
 
-        cancelActiveFixListener();
-        mFixInProgress = true;
-        mActiveNetworkFix = null;
+        LocationManager lm = (LocationManager) mContext.getSystemService(Context.LOCATION_SERVICE);
+        if (lm == null) return;
 
         boolean gpsEnabled = false;
         boolean netEnabled = false;
-        try {
-            gpsEnabled = lm.isProviderEnabled(LocationManager.GPS_PROVIDER);
-        } catch (Exception ignored) {}
-        try {
-            netEnabled = lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
-        } catch (Exception ignored) {}
+        try { gpsEnabled = lm.isProviderEnabled(LocationManager.GPS_PROVIDER); } catch (Exception ignored) {}
+        try { netEnabled = lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER); } catch (Exception ignored) {}
 
         if (!gpsEnabled && !netEnabled) {
-            mFixInProgress = false;
-            Log.w(TAG, "Both GPS and Network providers disabled; using fallback.");
-            resolveFallbackAfterTimeout(lm, customReasonTag);
+            Location last = getBestLastKnownLocation(lm);
+            if (last != null) {
+                enqueueAndUpload(last, "快取定位", reasonTag);
+            }
             return;
         }
 
-        final LocationListener listener = new LocationListener() {
+        mFixInProgress = true;
+        mActiveNetworkFix = null;
+        long timeoutMs = (mLastAccurateLocation == null) ? GPS_COLD_FIX_TIMEOUT_MS : GPS_FIX_TIMEOUT_MS;
+
+        mActiveListener = new LocationListener() {
             @Override
-            public void onLocationChanged(Location location) {
-                if (location == null || !mFixInProgress) return;
-                String provider = location.getProvider();
-                if (LocationManager.GPS_PROVIDER.equals(provider)) {
-                    Log.i(TAG, "Received hardware GPS fix: " + location.getLatitude() + "," + location.getLongitude());
-                    cancelActiveFixListener();
-                    mConsecutiveColdFailures = 0;
-                    if (mLastAccurateLocation != null) {
-                        float movedMeters = mLastAccurateLocation.distanceTo(location);
-                        mOutdoorStationary = (movedMeters < STATIONARY_DISTANCE_METERS);
-                    } else {
-                        mOutdoorStationary = false;
+            public void onLocationChanged(Location loc) {
+                if (loc == null) return;
+                if (LocationManager.GPS_PROVIDER.equals(loc.getProvider())) {
+                    if (loc.hasAccuracy() && loc.getAccuracy() > 120f) {
+                        return;
                     }
-                    mLastAccurateLocation = location;
-                    mLastFixBssid = getConnectedWifiBssid();
-                    String tag = customReasonTag != null ? customReasonTag : "GPS衛星";
-                    onLocationResolved(location.getLatitude(), location.getLongitude(), tag, true);
-                } else if (LocationManager.NETWORK_PROVIDER.equals(provider)) {
-                    mActiveNetworkFix = location;
-                    Log.d(TAG, "Buffered Network fix while waiting for GPS.");
+                    onFixResolved(loc, "GPS", reasonTag);
+                } else {
+                    mActiveNetworkFix = loc;
                 }
             }
 
-            @Override
-            public void onStatusChanged(String provider, int status, Bundle extras) {}
-
-            @Override
-            public void onProviderEnabled(String provider) {}
-
-            @Override
-            public void onProviderDisabled(String provider) {}
+            @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
+            @Override public void onProviderEnabled(String provider) {}
+            @Override public void onProviderDisabled(String provider) {}
         };
-
-        mActiveListener = listener;
 
         try {
             if (gpsEnabled) {
-                // Throttle XTRA/time injection to at most once every 6 hours (ephemeris is valid 24h+)
-                long nowMs = System.currentTimeMillis();
-                if (nowMs - mLastXtraInjectionMs >= XTRA_INJECTION_INTERVAL_MS) {
-                    mLastXtraInjectionMs = nowMs;
-                    try {
-                        lm.sendExtraCommand(LocationManager.GPS_PROVIDER, "force_time_injection", null);
-                        lm.sendExtraCommand(LocationManager.GPS_PROVIDER, "force_xtra_injection", null);
-                    } catch (Exception ignored) {}
-                }
-                lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 3000L, 0f, listener, Looper.getMainLooper());
+                lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, mActiveListener, Looper.getMainLooper());
             }
             if (netEnabled) {
-                lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 3000L, 0f, listener, Looper.getMainLooper());
+                lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000L, 0f, mActiveListener, Looper.getMainLooper());
             }
-        } catch (SecurityException se) {
-            Log.w(TAG, "SecurityException requesting location updates: " + se.getMessage());
-            cancelActiveFixListener();
-            resolveFallbackAfterTimeout(lm, customReasonTag);
-            return;
         } catch (Exception e) {
-            Log.w(TAG, "Failed requesting location updates: " + e.getMessage());
-            cancelActiveFixListener();
-            resolveFallbackAfterTimeout(lm, customReasonTag);
+            Log.w(TAG, "Failed to request location updates: " + e.getMessage());
+            cancelActiveFix();
             return;
         }
 
         mFixTimeoutRunnable = () -> {
             if (!mFixInProgress) return;
-            Location bufferedNet = mActiveNetworkFix;
-            cancelActiveFixListener();
-            if (bufferedNet != null) {
-                Log.i(TAG, "GPS timeout reached; using Network fix.");
-                mLastAccurateLocation = bufferedNet;
-                mLastFixBssid = getConnectedWifiBssid();
-                String tag = customReasonTag != null ? customReasonTag : "基地台/Wi-Fi";
-                onLocationResolved(bufferedNet.getLatitude(), bufferedNet.getLongitude(), tag, true);
+            Location fallback = mActiveNetworkFix != null ? mActiveNetworkFix : getBestLastKnownLocation(lm);
+            if (mActiveNetworkFix != null) {
+                onFixResolved(mActiveNetworkFix, "網路定位", reasonTag);
+            } else if (fallback != null) {
+                mConsecutiveColdFailures++;
+                onFixResolved(fallback, "最後已知", reasonTag);
             } else {
-                Log.i(TAG, "GPS timeout reached with no active fix; checking lastKnown / Wi-Fi fallback.");
-                resolveFallbackAfterTimeout(lm, customReasonTag);
+                mConsecutiveColdFailures++;
+                Log.w(TAG, "GPS fix timed out with no fallback (coldFailures=" + mConsecutiveColdFailures + ")");
+                cancelActiveFix();
             }
         };
-
-        // Cap cold-start GPS tracking at 90s (with backoff on consecutive indoor failures) to avoid draining battery indoors
-        long timeoutMs = (mLastAccurateLocation == null) ? GPS_COLD_FIX_TIMEOUT_MS : GPS_FIX_TIMEOUT_MS;
         mMainHandler.postDelayed(mFixTimeoutRunnable, timeoutMs);
     }
 
-    private void cancelActiveFixListener() {
+    private void onFixResolved(Location loc, String sourceTag, String reasonTag) {
+        cancelActiveFix();
+        if ("GPS".equals(sourceTag)) {
+            mConsecutiveColdFailures = 0;
+            if (mLastAccurateLocation != null) {
+                float dist = mLastAccurateLocation.distanceTo(loc);
+                mOutdoorStationary = dist < STATIONARY_DISTANCE_METERS;
+            } else {
+                mOutdoorStationary = false;
+            }
+            mLastAccurateLocation = new Location(loc);
+            mLastFixBssid = getCurrentWifiBssid();
+        }
+        enqueueAndUpload(loc, sourceTag, reasonTag);
+    }
+
+    private void cancelActiveFix() {
         mFixInProgress = false;
         if (mFixTimeoutRunnable != null) {
             mMainHandler.removeCallbacks(mFixTimeoutRunnable);
@@ -649,9 +335,7 @@ public class GpsBeaconManager {
         if (mActiveListener != null) {
             try {
                 LocationManager lm = (LocationManager) mContext.getSystemService(Context.LOCATION_SERVICE);
-                if (lm != null) {
-                    lm.removeUpdates(mActiveListener);
-                }
+                if (lm != null) lm.removeUpdates(mActiveListener);
             } catch (Exception ignored) {}
             mActiveListener = null;
         }
@@ -659,623 +343,126 @@ public class GpsBeaconManager {
     }
 
     @SuppressLint("MissingPermission")
-    private void resolveFallbackAfterTimeout(LocationManager lm, String customReasonTag) {
-        Location bestLast = null;
-        if (lm != null && hasLocationPermission()) {
+    private Location getBestLastKnownLocation(LocationManager lm) {
+        Location best = null;
+        for (String p : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER}) {
             try {
-                Location lastGps = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER);
-                Location lastNet = lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
-                if (lastGps != null && lastNet != null) {
-                    bestLast = lastGps.getTime() >= lastNet.getTime() ? lastGps : lastNet;
-                } else {
-                    bestLast = lastGps != null ? lastGps : lastNet;
+                Location cand = lm.getLastKnownLocation(p);
+                if (cand != null && (best == null || cand.getTime() > best.getTime())) {
+                    best = cand;
                 }
             } catch (Exception ignored) {}
         }
-
-        if (bestLast == null) {
-            bestLast = mLastAccurateLocation;
-        }
-
-        if (bestLast != null) {
-            mLastAccurateLocation = bestLast;
-            mLastFixBssid = getConnectedWifiBssid();
-            String tag = customReasonTag != null ? customReasonTag : "最後已知GPS";
-            onLocationResolved(bestLast.getLatitude(), bestLast.getLongitude(), tag, false);
-        } else {
-            boolean peerWifiEnabled = Settings.getInstance(mContext).isPeerWifiLocationEnabled();
-            Location peerLoc = peerWifiEnabled ? findPeerLocationFallback() : null;
-            if (peerLoc != null) {
-                mLastAccurateLocation = peerLoc;
-                mLastFixBssid = getConnectedWifiBssid();
-                String tag = customReasonTag != null ? customReasonTag : "Wi-Fi隊友座標";
-                onLocationResolved(peerLoc.getLatitude(), peerLoc.getLongitude(), tag, false);
-                Log.i(TAG, "Applied peer location fallback on same network: " + peerLoc.getLatitude() + "," + peerLoc.getLongitude());
-            } else {
-                mConsecutiveColdFailures = Math.min(mConsecutiveColdFailures + 1, 3);
-                Log.w(TAG, "No GPS fix or last known coordinates available (coldFailures=" + mConsecutiveColdFailures + "); skipping beacon to avoid fake IP location.");
-            }
-        }
+        return best;
     }
 
-    private Location findPeerLocationFallback() {
-        String selfName = resolveSelfUserName();
-        long now = System.currentTimeMillis();
-        for (LocationRecord rec : mRosterLocations.values()) {
-            if (rec != null && !rec.userName.equalsIgnoreCase(selfName) && rec.latitude != 0 && rec.longitude != 0) {
-                // If received within the past 4 hours
-                if (now - rec.timestampMs < 4 * 3600 * 1000L) {
-                    Location loc = new Location("peer_roster");
-                    loc.setLatitude(rec.latitude);
-                    loc.setLongitude(rec.longitude);
-                    loc.setTime(rec.timestampMs);
-                    return loc;
-                }
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Updates the Size-1 Overwrite Queue with the latest record and flushes immediately if online.
-     */
-    private void onLocationResolved(double lat, double lon, String sourceTag, boolean saveAsAccurate) {
-        if (saveAsAccurate && mLastAccurateLocation == null) {
-            Location loc = new Location("gps");
-            loc.setLatitude(lat);
-            loc.setLongitude(lon);
-            loc.setTime(System.currentTimeMillis());
-            mLastAccurateLocation = loc;
-        }
-
-        String userName = resolveSelfUserName();
-        LocationRecord record = new LocationRecord(
-                userName,
-                mLatestBatteryPercent,
-                mLatestIsCharging,
-                System.currentTimeMillis(),
-                lat,
-                lon,
-                sourceTag
-        );
-
-        // Size-1 overwrite queue: flush immediately if online, persist pending slot only when offline
-        mPendingOutgoingRecord = record;
-        flushPendingRecordIfConnected();
-        if (mPendingOutgoingRecord != null) {
-            persistPendingRecord(mPendingOutgoingRecord);
-        }
-    }
-
-    /**
-     * Sends the single pending record in the size-1 queue if connected and synchronized.
-     * Leaves it in the slot (without duplicating) if currently disconnected.
-     */
-    public synchronized void flushPendingRecordIfConnected() {
-        if (isCurrentUserAdmin()) {
-            // SuperUser is an admin account; do not pollute the team location board with SuperUser's own location.
-            mPendingOutgoingRecord = null;
-            persistPendingRecord(null);
-            return;
-        }
-        LocationRecord record = mPendingOutgoingRecord;
-        if (record == null) {
-            return;
-        }
-        if (mService == null || !mService.isConnectionEstablished()) {
-            Log.i(TAG, "Offline: holding single latest record in size-1 overwrite queue (at " + formatTime(record.timestampMs) + ").");
-            return;
-        }
-
-        IUser selfUser;
-        IChannel selfChannel;
-        int selfSession;
+    private void enqueueAndUpload(Location loc, String sourceTag, String reasonTag) {
+        JSONObject point = new JSONObject();
         try {
-            selfUser = mService.getSessionUser();
-            selfChannel = mService.getSessionChannel();
-            selfSession = mService.getSessionId();
-        } catch (Exception e) {
-            Log.d(TAG, "Session not ready yet for flush: " + e.getMessage());
-            return;
-        }
-
-        if (selfUser == null || selfChannel == null) {
-            return;
-        }
-
-        record.userName = selfUser.getName();
-        mPendingOutgoingRecord = null;
-        persistPendingRecord(null);
-
-        updateRosterRecord(record);
-
-        try {
-            String htmlMessage = formatSingleRecordHtml(record);
-            // Plan 1: Only update user comment (zero chat spam, Murmur allows without admin permissions)
-            mService.setUserComment(selfSession, htmlMessage);
-            mLastReportedBatteryPercent = record.batteryPercent;
-            mLastReportedIsCharging = record.isCharging;
-            Log.i(TAG, "Flushed GPS beacon for " + record.userName + " (" + record.sourceTag + ", " + record.batteryPercent + "%) to User Comment.");
-        } catch (Exception e) {
-            Log.w(TAG, "Failed updating user comment, restoring to queue: " + e.getMessage());
-            mPendingOutgoingRecord = record;
-            persistPendingRecord(record);
-        }
-    }
-
-    /**
-     * Returns the formatted roster summary HTML for displaying in UI dialogs.
-     */
-    public String getRosterSummaryHtml() {
-        return formatRosterSummaryHtml();
-    }
-
-    public Map<String, LocationRecord> getRosterLocationsMap() {
-        return mRosterLocations;
-    }
-
-    public boolean isUserOnline(String userName) {
-        if (userName == null) return false;
-        return collectOnlineUserNames().contains(userName);
-    }
-
-    /**
-     * Checks whether the current logged-in session is the server administrator (SuperUser).
-     */
-    public boolean isCurrentUserAdmin() {
-        if (mService == null || !mService.isConnectionEstablished()) {
-            return false;
-        }
-        try {
-            IUser self = mService.getSessionUser();
-            if (self != null) {
-                if (self.getUserId() == 0 || "SuperUser".equalsIgnoreCase(self.getName())) {
-                    return true;
-                }
-            }
-            se.lublin.humla.model.Server srv = mService.getTargetServer();
-            if (srv != null && "SuperUser".equalsIgnoreCase(srv.getUsername())) {
-                return true;
-            }
-        } catch (Exception ignored) {}
-        return false;
-    }
-
-    public void removeRosterRecordLocal(String targetUserName) {
-        if (targetUserName == null || targetUserName.isEmpty()) return;
-        mRosterLocations.remove(targetUserName);
-        persistRosterMap();
-    }
-
-    /**
-     * Admin-only action: deletes a member's location record locally, clears their server comment
-     * if online, and broadcasts a silent purge command to synchronize all connected devices.
-     */
-    public boolean removeRosterRecordAsAdmin(String targetUserName) {
-        if (!isCurrentUserAdmin() || targetUserName == null || targetUserName.isEmpty()) {
-            return false;
-        }
-        removeRosterRecordLocal(targetUserName);
-
-        if (mService != null && mService.isConnectionEstablished()) {
-            try {
-                IChannel root = mService.getRootChannel();
-                IUser targetUser = findOnlineUserRecursive(root, targetUserName);
-                if (targetUser != null) {
-                    mService.setUserComment(targetUser.getSession(), "");
-                }
-            } catch (Exception e) {
-                Log.w(TAG, "Failed clearing target user comment: " + e.getMessage());
-            }
-
-            try {
-                String cmd = HEADER_CLEAR_USER + " " + targetUserName;
-                IChannel currentChan = mService.getSessionChannel();
-                if (currentChan != null) {
-                    mService.sendChannelTextMessage(currentChan.getId(), cmd, false);
-                }
-                if (currentChan == null || currentChan.getId() != 0) {
-                    mService.sendChannelTextMessage(0, cmd, true);
-                }
-            } catch (Exception e) {
-                Log.w(TAG, "Failed broadcasting admin location clear command: " + e.getMessage());
-            }
-        }
-        return true;
-    }
-
-    private IUser findOnlineUserRecursive(IChannel channel, String userName) {
-        if (channel == null || userName == null) return null;
-        List<? extends IUser> users = channel.getUsers();
-        if (users != null) {
-            for (IUser u : users) {
-                if (u != null && userName.equals(u.getName())) {
-                    return u;
-                }
-            }
-        }
-        List<? extends IChannel> subs = channel.getSubchannels();
-        if (subs != null) {
-            for (IChannel sub : subs) {
-                IUser found = findOnlineUserRecursive(sub, userName);
-                if (found != null) return found;
-            }
-        }
-        return null;
-    }
-
-    public List<LocationRecord> getSortedRosterRecords() {
-        final Set<String> onlineNames = collectOnlineUserNames();
-        List<LocationRecord> sorted = new ArrayList<>(mRosterLocations.values());
-        Collections.sort(sorted, new Comparator<LocationRecord>() {
-            @Override
-            public int compare(LocationRecord a, LocationRecord b) {
-                boolean onlineA = a.userName != null && onlineNames.contains(a.userName);
-                boolean onlineB = b.userName != null && onlineNames.contains(b.userName);
-                if (onlineA != onlineB) {
-                    return onlineA ? -1 : 1;
-                }
-                return Long.compare(b.timestampMs, a.timestampMs);
-            }
-        });
-        return sorted;
-    }
-
-    public static String formatRelativeTimeShort(long timestampMs) {
-        long diffMs = Math.max(0L, System.currentTimeMillis() - timestampMs);
-        String hm = new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date(timestampMs));
-        if (diffMs < 60_000L) {
-            return "剛剛 (" + hm + ")";
-        } else if (diffMs < 3600_000L) {
-            return (diffMs / 60_000L) + " 分鐘前 (" + hm + ")";
-        } else if (diffMs < 86400_000L) {
-            return (diffMs / 3600_000L) + " 小時前 (" + hm + ")";
-        } else {
-            String mdHm = new SimpleDateFormat("MM/dd HH:mm", Locale.getDefault()).format(new Date(timestampMs));
-            return (diffMs / 86400_000L) + " 天前 (" + mdHm + ")";
-        }
-    }
-
-    public static String formatFullTimeWithRelative(long timestampMs) {
-        long diffMs = Math.max(0L, System.currentTimeMillis() - timestampMs);
-        String full = new SimpleDateFormat("MM/dd HH:mm:ss", Locale.getDefault()).format(new Date(timestampMs));
-        String rel;
-        if (diffMs < 60_000L) {
-            rel = "剛剛";
-        } else if (diffMs < 3600_000L) {
-            rel = (diffMs / 60_000L) + " 分鐘前";
-        } else if (diffMs < 86400_000L) {
-            rel = (diffMs / 3600_000L) + " 小時前";
-        } else {
-            rel = (diffMs / 86400_000L) + " 天前";
-        }
-        return rel + " (" + full + ")";
-    }
-
-    private void postRosterSummaryNow() {
-        if (mService == null || !mService.isConnectionEstablished()) {
-            return;
-        }
-        IChannel channel;
-        try {
-            channel = mService.getSessionChannel();
+            point.put("user", getConnectedUserName());
+            point.put("lat", loc.getLatitude());
+            point.put("lng", loc.getLongitude());
+            point.put("ts", System.currentTimeMillis());
+            point.put("bat", mLatestBatteryPercent);
+            point.put("charging", mLatestIsCharging);
+            point.put("src", sourceTag);
+            if (loc.hasAltitude()) point.put("alt", loc.getAltitude());
+            if (loc.hasAccuracy()) point.put("acc", loc.getAccuracy());
+            if (reasonTag != null && !reasonTag.isEmpty()) point.put("note", reasonTag);
         } catch (Exception e) {
             return;
         }
-        if (channel == null || mRosterLocations.isEmpty()) {
+
+        mLastReportedBatteryPercent = mLatestBatteryPercent;
+        mLastReportedIsCharging = mLatestIsCharging;
+
+        synchronized (mQueueLock) {
+            mPendingQueue.add(point);
+            while (mPendingQueue.size() > MAX_PENDING_QUEUE) {
+                mPendingQueue.remove(0);
+            }
+            savePendingQueueLocked();
+        }
+        flushPendingQueueAsync();
+    }
+
+    private void flushPendingQueueAsync() {
+        mExecutor.execute(this::flushPendingQueueSync);
+    }
+
+    private void flushPendingQueueSync() {
+        List<JSONObject> batch;
+        synchronized (mQueueLock) {
+            if (mPendingQueue.isEmpty()) return;
+            batch = new ArrayList<>(mPendingQueue);
+        }
+
+        Settings settings = Settings.getInstance(mContext);
+        String hubUrl = settings.getHubUrl();
+        if (hubUrl == null || hubUrl.trim().isEmpty()) {
+            Log.w(TAG, "Hub URL not configured; keeping " + batch.size() + " GPS point(s) queued.");
             return;
         }
-        mLastRosterBroadcastAtMs = System.currentTimeMillis();
+        String endpoint = hubUrl.trim().replaceAll("/+$", "") + "/gps";
+        String token = settings.getHubToken();
+
+        HttpURLConnection conn = null;
         try {
-            String summaryHtml = formatRosterSummaryHtml();
-            mService.sendChannelTextMessage(channel.getId(), summaryHtml, false);
-            Log.i(TAG, "Posted server-wide roster summary (" + mRosterLocations.size() + " members).");
-        } catch (Exception e) {
-            Log.w(TAG, "Failed posting roster summary: " + e.getMessage());
-        }
-    }
+            JSONArray arr = new JSONArray();
+            for (JSONObject p : batch) arr.put(p);
+            byte[] body = arr.toString().getBytes(StandardCharsets.UTF_8);
 
-    private String formatSingleRecordHtml(LocationRecord rec) {
-        String latStr = String.format(Locale.US, "%.6f", rec.latitude);
-        String lonStr = String.format(Locale.US, "%.6f", rec.longitude);
-        String mapsUrl = "https://maps.google.com/?q=" + latStr + "," + lonStr;
-        String chargeMark = rec.isCharging ? "⚡" : "";
-        return "<b>" + HEADER_BEACON + "</b> " + escapeHtml(rec.userName)
-                + " | 🔋 " + rec.batteryPercent + "%" + chargeMark
-                + " | 🕒 " + formatTime(rec.timestampMs)
-                + " (" + escapeHtml(rec.sourceTag) + ")"
-                + "<br/><a href=\"" + mapsUrl + "\">📍 點擊開啟 Google 地圖 (" + latStr + ", " + lonStr + ")</a>";
-    }
-
-    private String formatRosterSummaryHtml() {
-        Set<String> onlineNames = collectOnlineUserNames();
-        List<LocationRecord> sorted = new ArrayList<>(mRosterLocations.values());
-        Collections.sort(sorted, new Comparator<LocationRecord>() {
-            @Override
-            public int compare(LocationRecord a, LocationRecord b) {
-                return Long.compare(b.timestampMs, a.timestampMs);
+            conn = (HttpURLConnection) new URL(endpoint).openConnection();
+            conn.setRequestMethod("POST");
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(12000);
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            if (token != null && !token.trim().isEmpty()) {
+                conn.setRequestProperty("X-Mumla-Token", token.trim());
             }
-        });
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("<b>").append(HEADER_ROSTER).append("</b><br/>");
-        for (LocationRecord rec : sorted) {
-            boolean online = onlineNames.contains(rec.userName);
-            String statusIcon = online ? "🟢 在線" : "⚪ 離線";
-            String latStr = String.format(Locale.US, "%.6f", rec.latitude);
-            String lonStr = String.format(Locale.US, "%.6f", rec.longitude);
-            String mapsUrl = "https://maps.google.com/?q=" + latStr + "," + lonStr;
-            String chargeMark = rec.isCharging ? "⚡" : "";
-            sb.append("<br/>• ").append(statusIcon).append(" <b>").append(escapeHtml(rec.userName)).append("</b>")
-                    .append("<br/>&nbsp;&nbsp;&nbsp;&nbsp;🔋 電量 ").append(rec.batteryPercent).append("%").append(chargeMark)
-                    .append(" | 🕒 ").append(formatTime(rec.timestampMs))
-                    .append(" (").append(escapeHtml(rec.sourceTag)).append(")")
-                    .append("<br/>&nbsp;&nbsp;&nbsp;&nbsp;👉 <a href=\"").append(mapsUrl).append("\">📍 開啟地圖 (")
-                    .append(latStr).append(", ").append(lonStr).append(")</a><br/>");
-        }
-        return sb.toString();
-    }
-
-    private Set<String> collectOnlineUserNames() {
-        Set<String> names = new HashSet<>();
-        if (mService == null || !mService.isConnectionEstablished()) {
-            return names;
-        }
-        try {
-            IChannel root = mService.getRootChannel();
-            if (root != null) {
-                collectChannelUsersRecursive(root, names);
-            }
-        } catch (Exception ignored) {}
-        return names;
-    }
-
-    private void collectChannelUsersRecursive(IChannel channel, Set<String> names) {
-        if (channel == null) return;
-        List<? extends IUser> users = channel.getUsers();
-        if (users != null) {
-            for (IUser u : users) {
-                if (u != null && u.getName() != null) {
-                    names.add(u.getName());
-                }
-            }
-        }
-        List<? extends IChannel> subs = channel.getSubchannels();
-        if (subs != null) {
-            for (IChannel sub : subs) {
-                collectChannelUsersRecursive(sub, names);
-            }
-        }
-    }
-
-    private LocationRecord parseSingleBeaconMessage(String actorName, String rawHtml, String plain) {
-        Matcher coordMatcher = COORDS_PATTERN.matcher(rawHtml);
-        if (!coordMatcher.find()) {
-            return null;
-        }
-        try {
-            double lat = Double.parseDouble(coordMatcher.group(1));
-            double lon = Double.parseDouble(coordMatcher.group(2));
-
-            int battery = 0;
-            Matcher batMatcher = BATTERY_PATTERN.matcher(plain);
-            if (batMatcher.find()) {
-                battery = Integer.parseInt(batMatcher.group(1));
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(body);
             }
 
-            String source = "定位";
-            long parsedTimestampMs = System.currentTimeMillis();
-            Matcher timeAndSrcMatcher = TIME_AND_SOURCE_PATTERN.matcher(plain);
-            if (timeAndSrcMatcher.find()) {
-                parsedTimestampMs = parseBeaconTimestampMs(timeAndSrcMatcher.group(1));
-                source = timeAndSrcMatcher.group(2);
-            } else {
-                Matcher srcMatcher = SOURCE_PATTERN.matcher(plain);
-                if (srcMatcher.find()) {
-                    source = srcMatcher.group(1);
-                }
-            }
-
-            String name = actorName;
-            int idxHeader = plain.indexOf(HEADER_BEACON);
-            int idxPipe = plain.indexOf('|');
-            if (idxHeader >= 0 && idxPipe > idxHeader + HEADER_BEACON.length()) {
-                String parsedName = plain.substring(idxHeader + HEADER_BEACON.length(), idxPipe).trim();
-                if (!parsedName.isEmpty()) {
-                    name = parsedName;
-                }
-            }
-            if (name == null || name.isEmpty()) {
-                name = "Unknown";
-            }
-
-            return new LocationRecord(name, battery, plain.contains("⚡"),
-                    parsedTimestampMs, lat, lon, source);
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    private long parseBeaconTimestampMs(String mmddHhmmss) {
-        long now = System.currentTimeMillis();
-        if (mmddHhmmss == null || mmddHhmmss.trim().isEmpty()) {
-            return now;
-        }
-        try {
-            Calendar nowCal = Calendar.getInstance();
-            int year = nowCal.get(Calendar.YEAR);
-            SimpleDateFormat sdf = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss", Locale.US);
-            Date parsed = sdf.parse(year + "/" + mmddHhmmss.trim());
-            if (parsed != null) {
-                long ts = parsed.getTime();
-                // Handle year rollover (e.g., Dec 31 timestamp parsed on Jan 1)
-                if (ts - now > 24 * 3600 * 1000L) {
-                    Calendar prevCal = Calendar.getInstance();
-                    prevCal.setTimeInMillis(ts);
-                    prevCal.add(Calendar.YEAR, -1);
-                    ts = prevCal.getTimeInMillis();
-                }
-                return ts;
-            }
-        } catch (Exception ignored) {}
-        return now;
-    }
-
-    private void parseRosterSummaryIntoCache(String rawHtml) {
-        String[] lines = rawHtml.split("<br\\s*/?>");
-        for (String line : lines) {
-            String plainLine = HtmlUtils.stripHtml(line);
-            if (!plainLine.contains("maps.google.com/?q=") && !line.contains("maps.google.com/?q=")) {
-                continue;
-            }
-            Matcher coordMatcher = COORDS_PATTERN.matcher(line);
-            if (!coordMatcher.find()) continue;
-            try {
-                double lat = Double.parseDouble(coordMatcher.group(1));
-                double lon = Double.parseDouble(coordMatcher.group(2));
-                int battery = 0;
-                Matcher batMatcher = ROSTER_BATTERY_PATTERN.matcher(plainLine);
-                if (batMatcher.find()) {
-                    battery = Integer.parseInt(batMatcher.group(1));
-                }
-                int start = plainLine.indexOf("在線");
-                if (start < 0) start = plainLine.indexOf("離線");
-                int paren = plainLine.indexOf('(', Math.max(0, start));
-                if (start >= 0 && paren > start + 2) {
-                    String name = plainLine.substring(start + 2, paren).trim();
-                    if (!name.isEmpty() && !mRosterLocations.containsKey(name)) {
-                        mRosterLocations.put(name, new LocationRecord(
-                                name, battery, false, System.currentTimeMillis(), lat, lon, "彙整紀錄"));
-                        persistRosterMap();
+            int code = conn.getResponseCode();
+            if (code >= 200 && code < 300) {
+                synchronized (mQueueLock) {
+                    int removeCount = Math.min(batch.size(), mPendingQueue.size());
+                    for (int i = 0; i < removeCount; i++) {
+                        mPendingQueue.remove(0);
                     }
+                    savePendingQueueLocked();
                 }
-            } catch (Exception ignored) {}
+                Log.i(TAG, "Uploaded " + batch.size() + " GPS point(s) to " + endpoint + " (HTTP " + code + ")");
+            } else {
+                Log.w(TAG, "GPS upload HTTP " + code + " to " + endpoint + "; will retry later.");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "GPS upload failed (offline?): " + e.getMessage());
+        } finally {
+            if (conn != null) conn.disconnect();
         }
     }
 
-    private void updateRosterRecord(LocationRecord record) {
-        if (record == null || record.userName == null) return;
-        mRosterLocations.put(record.userName, record);
-        persistRosterMap();
-    }
-
-    private void loadPersistedState() {
-        try {
-            String pendingStr = mPrefs.getString(KEY_PENDING_OUTGOING, null);
-            if (pendingStr != null) {
-                mPendingOutgoingRecord = LocationRecord.fromJson(new JSONObject(pendingStr));
-                mHasPersistedPending = (mPendingOutgoingRecord != null);
-            }
-        } catch (Exception ignored) {}
-
-        try {
-            String rosterStr = mPrefs.getString(KEY_ROSTER_MAP, null);
-            if (rosterStr != null) {
-                JSONArray arr = new JSONArray(rosterStr);
+    private void loadPendingQueue() {
+        synchronized (mQueueLock) {
+            mPendingQueue.clear();
+            String raw = mPrefs.getString(KEY_PENDING_QUEUE, null);
+            if (raw == null || raw.isEmpty()) return;
+            try {
+                JSONArray arr = new JSONArray(raw);
                 for (int i = 0; i < arr.length(); i++) {
-                    LocationRecord rec = LocationRecord.fromJson(arr.optJSONObject(i));
-                    if (rec != null && rec.userName != null) {
-                        mRosterLocations.put(rec.userName, rec);
-                    }
-                }
-            }
-            if (mLastAccurateLocation == null) {
-                LocationRecord selfRec = mRosterLocations.get(resolveSelfUserName());
-                if (selfRec != null && selfRec.latitude != 0 && selfRec.longitude != 0) {
-                    boolean isPeer = "Wi-Fi隊友座標".equals(selfRec.sourceTag) || "網路定位".equals(selfRec.sourceTag);
-                    if (!isPeer || Settings.getInstance(mContext).isPeerWifiLocationEnabled()) {
-                        Location loc = new Location("persisted");
-                        loc.setLatitude(selfRec.latitude);
-                        loc.setLongitude(selfRec.longitude);
-                        loc.setTime(selfRec.timestampMs);
-                        mLastAccurateLocation = loc;
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
-    }
-
-    private void persistPendingRecord(final LocationRecord record) {
-        if (record == null && !mHasPersistedPending) {
-            return;
-        }
-        mHasPersistedPending = (record != null);
-        final String json = (record != null) ? record.toJson().toString() : null;
-        mExecutor.execute(() -> {
-            if (json == null) {
-                mPrefs.edit().remove(KEY_PENDING_OUTGOING).apply();
-            } else {
-                mPrefs.edit().putString(KEY_PENDING_OUTGOING, json).apply();
-            }
-        });
-    }
-
-    private void persistRosterMap() {
-        final List<LocationRecord> snapshot = new ArrayList<>(mRosterLocations.values());
-        mExecutor.execute(() -> {
-            try {
-                JSONArray arr = new JSONArray();
-                for (LocationRecord rec : snapshot) {
-                    arr.put(rec.toJson());
-                }
-                mPrefs.edit().putString(KEY_ROSTER_MAP, arr.toString()).apply();
-            } catch (Exception ignored) {}
-        });
-    }
-
-    public String getConnectedUserName() {
-        if (mService != null) {
-            try {
-                IUser user = mService.getSessionUser();
-                if (user != null && user.getName() != null && !user.getName().trim().isEmpty()) {
-                    return user.getName().trim();
+                    JSONObject obj = arr.optJSONObject(i);
+                    if (obj != null) mPendingQueue.add(obj);
                 }
             } catch (Exception ignored) {}
         }
-        return null;
     }
 
-    private String resolveSelfUserName() {
-        if (mService != null) {
-            try {
-                IUser user = mService.getSessionUser();
-                if (user != null && user.getName() != null) {
-                    return user.getName();
-                }
-            } catch (Exception ignored) {}
-        }
-        if (mPendingOutgoingRecord != null && mPendingOutgoingRecord.userName != null) {
-            return mPendingOutgoingRecord.userName;
-        }
-        return android.os.Build.MODEL != null ? android.os.Build.MODEL : "Radio";
-    }
-
-    private String getConnectedWifiBssid() {
-        try {
-            WifiManager wm = (WifiManager) mContext.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-            if (wm == null || !wm.isWifiEnabled()) return null;
-            WifiInfo info = wm.getConnectionInfo();
-            if (info == null) return null;
-            String bssid = info.getBSSID();
-            if (bssid == null || bssid.isEmpty() || MASKED_BSSID.equals(bssid)) {
-                return null;
-            }
-            return bssid;
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    private String formatTime(long timestampMs) {
-        SimpleDateFormat sdf = new SimpleDateFormat("MM/dd HH:mm:ss", Locale.getDefault());
-        return sdf.format(new Date(timestampMs));
-    }
-
-    private String escapeHtml(String s) {
-        if (s == null) return "";
-        return s.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("\"", "&quot;");
+    private void savePendingQueueLocked() {
+        JSONArray arr = new JSONArray();
+        for (JSONObject p : mPendingQueue) arr.put(p);
+        mPrefs.edit().putString(KEY_PENDING_QUEUE, arr.toString()).apply();
     }
 }

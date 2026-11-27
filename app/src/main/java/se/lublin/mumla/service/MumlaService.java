@@ -209,13 +209,7 @@ public class MumlaService extends HumlaService implements
 
         @Override
         public void onUserConnected(IUser user) {
-            // Skip automatic avatar blob fetching on walkie-talkie to save bandwidth and RAM
-            if (user.getCommentHash() != null && user.getComment() == null) {
-                // Automatically fetch user comment (>128 bytes) to sync GPS beacons.
-                requestComment(user.getSession());
-            }
-            GpsBeaconManager.getInstance(MumlaService.this).onUserJoinedServer(user);
-            GpsBeaconManager.getInstance(MumlaService.this).onUserCommentUpdated(user);
+            // Skip automatic avatar and comment blob fetching on walkie-talkie to save bandwidth and RAM
         }
 
         @Override
@@ -251,28 +245,11 @@ public class MumlaService extends HumlaService implements
                     mNotification.setCustomContentText(contentText);
                     mNotification.show();
                 }
-                // Skip requesting/re-parsing our own comment blob (GpsBeaconManager already persisted it locally)
-                return;
             }
-
-            // Skip automatic avatar blob fetching to save RAM/bandwidth on walkie-talkie
-            if (user.getCommentHash() != null && user.getComment() == null) {
-                // Automatically fetch other users' updated comment (>128 bytes) to sync GPS beacons.
-                requestComment(user.getSession());
-            }
-
-            GpsBeaconManager.getInstance(MumlaService.this).onUserCommentUpdated(user);
         }
 
         @Override
         public void onMessageLogged(IMessage message) {
-            boolean isGpsMessage = GpsBeaconManager.getInstance(MumlaService.this).onIncomingChatMessage(message);
-            if (isGpsMessage && message != null && message.getMessage() != null
-                    && message.getMessage().contains(GpsBeaconManager.HEADER_CLEAR_USER)) {
-                // Silent admin purge control command: do not show chat notification or clutter chat log.
-                return;
-            }
-
             if (mSettings.isChatNotifyEnabled()) {
                 mMessageNotification.show(message);
             }
