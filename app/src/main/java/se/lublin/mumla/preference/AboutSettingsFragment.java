@@ -27,9 +27,6 @@ public class AboutSettingsFragment extends MumlaPreferenceFragment {
 
         String summary = String.format(Locale.US, "%s (code %d)\nCommit: %s\nBuild: %s (GMT+8)",
                 BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, BuildConfig.GIT_SHA, buildTime);
-        if (BuildConfig.FLAVOR.equals("donation")) {
-            summary += String.format("\n*) %s", getString(R.string.donation_thanks));
-        }
         Preference versionPreference = getPreferenceScreen().findPreference(VERSION_KEY);
         requireNonNull(versionPreference).setSummary(summary);
     }

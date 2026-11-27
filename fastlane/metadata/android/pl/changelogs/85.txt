@@ -1,3 +1,0 @@
-- deluxghost przetłumaczył Mumlę na chiński uproszczony.
-- Pobieranie listy serwerów działa.
-- Naprawiono błąd powodujący awarię związany z obrazem z identyfikatorem URI danych.

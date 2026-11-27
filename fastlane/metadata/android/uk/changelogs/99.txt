@@ -1,5 +1,0 @@
-Це оновлення спрямоване на більш новий рівень API, відповідно до вимог Google. Сподіваємось, все працює 🤞
-
-Також враховано нові переклади завдяки: AHOHNMYC, Nordhøy, DEN35, J. Lavoie, Josue Mosqueira, Konstantin Goncharik, Laurens Wuyts, Maite Guix, Matthaiks, Michal Bedáň, Oğuz Ersen, Rodrigo Garcia Martin, deluxghost, gallegonovato, pjammo, ssantos.
-
-Переклад виконано тут: https://hosted.weblate.org/projects/mumla/

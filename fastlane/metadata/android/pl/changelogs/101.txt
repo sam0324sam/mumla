@@ -1,5 +1,0 @@
-Dostosowanie Mumli do działałania w systemie Android 14 (SDK 34). Miejmy nadzieję, że nie gorzej niż dotychczas.
-
-Podziękowania dla Nicolasa Peugneta za kilka poprawek błędów w wewnętrznych elementach Humla.
-
-Aktualizacje tłumaczeń dzięki: Allanowi Nordhøyowi, deluxghost, gallegonovato, Matthaiksowi, Oğuzowi Ersenowi, pjammo, riomccloud.

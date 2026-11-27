@@ -51,9 +51,7 @@ public class DrawerAdapter extends ArrayAdapter<DrawerAdapter.DrawerRow> {
     // Drawer rows, integer value is id
     public static final int HEADER_CONNECTED_SERVER = 0;
     public static final int ITEM_SERVER = 1;
-    public static final int ITEM_PINNED_CHANNELS = 2;
     public static final int ITEM_INFO = 3;
-    public static final int ITEM_ACCESS_TOKENS = 4;
     public static final int HEADER_SERVERS = 5;
     public static final int ITEM_FAVOURITES = 6;
     public static final int HEADER_GENERAL = 9;
@@ -172,8 +170,6 @@ public class DrawerAdapter extends ArrayAdapter<DrawerAdapter.DrawerRow> {
             switch ((int) getItemId(position)) {
                 case ITEM_SERVER:
                 case ITEM_INFO:
-                case ITEM_ACCESS_TOKENS:
-                case ITEM_PINNED_CHANNELS:
                     return mProvider.isConnected();
 //                case ITEM_LAN:
 //                    return false;

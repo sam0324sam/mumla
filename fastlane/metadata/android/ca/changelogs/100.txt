@@ -1,1 +1,0 @@
-Aquesta versió afegeix la sol·licitud del permís per enviar notificacions, necessària a l'Android 13.

@@ -1,7 +1,0 @@
-Этот выпуск повышает уровень целевого API в соответствии с требованиями Google. Надеемся, всё работает как надо! 🤞
-
-Обновлённые переводы (спасибо участникам):
-AHOHNMYC, Nordhøy, DEN35, J. Lavoie, Josue Mosqueira, Konstantin Goncharik, Laurens Wuyts, Maite Guix, Matthaiks, Michal Bedáň, Oğuz Ersen, Rodrigo Garcia Martin, deluxghost, gallegonovato, pjammo, ssantos.
-
-Присоединяйтесь к проекту на Weblate — даже небольшие правки важны!
-🌍 https://hosted.weblate.org/projects/mumla/

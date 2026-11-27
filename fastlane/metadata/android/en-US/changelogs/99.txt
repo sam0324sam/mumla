@@ -1,5 +1,0 @@
-This release targets the app towards a more recent API level, as per Google's requirements. Hope it all works 🤞
-
-Also incorporating new translations thanks to: AHOHNMYC, Nordhøy, DEN35, J. Lavoie, Josue Mosqueira, Konstantin Goncharik, Laurens Wuyts, Maite Guix, Matthaiks, Michal Bedáň, Oğuz Ersen, Rodrigo Garcia Martin, deluxghost, gallegonovato, pjammo, ssantos.
-
-Translating is done here: https://hosted.weblate.org/projects/mumla/

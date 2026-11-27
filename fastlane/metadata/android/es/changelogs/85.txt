@@ -1,3 +1,0 @@
-- deluxghost tradujo Mumla al chino simplificado.
-- La recuperación de la lista de servidores públicos funciona de nuevo.
-- Corregido un error de bloqueo relacionado con la imagen con data-URI.

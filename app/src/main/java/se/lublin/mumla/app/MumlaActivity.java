@@ -87,7 +87,6 @@ import se.lublin.humla.util.MumbleURLParser;
 import se.lublin.mumla.BuildConfig;
 import se.lublin.mumla.R;
 import se.lublin.mumla.Settings;
-import se.lublin.mumla.channel.AccessTokenFragment;
 import se.lublin.mumla.channel.ChannelFragment;
 import se.lublin.mumla.channel.ServerInfoFragment;
 import se.lublin.mumla.db.DatabaseCertificate;
@@ -419,8 +418,6 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
             // recreates the activity on configuration change, like screen rotation.
             if (mSettings.isFirstRun()) {
                 showFirstRunGuide();
-            } else {
-                new StartupAction().execute(this);
             }
         }
 
@@ -569,9 +566,6 @@ public class MumlaActivity extends AppCompatActivity implements ListView.OnItemC
             return;
         }
         String msg = getString(R.string.first_run_generate_certificate);
-        if (BuildConfig.FLAVOR.equals("donation")) {
-            msg = getString(R.string.donation_thanks) + "\n\n" + msg;
-        }
         new MaterialAlertDialogBuilder(this)
                 .setTitle(R.string.first_run_generate_certificate_title)
                 .setMessage(msg)

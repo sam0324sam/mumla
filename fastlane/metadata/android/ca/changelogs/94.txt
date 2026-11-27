@@ -1,7 +1,0 @@
-Aquesta versió adapta el Mumla a les noves versions d'Android, tal com exigeix el Google Play. Ara Mumla ha de funcionar amb Android 12.
-
-L'exportació dels certificats del client del Mumla s'ha adaptat per funcionar amb Android 11+.
-
-Inclou traduccions noves des de la darrera versió. Gràcies! anònim, Abidin, Alfonso, deluxghost, Gabriel, Jaroslav, Kityn, Maite, Oğuz, pjammo, Vinicius, WLJ, Wesley
-
-La traducció es manté aquí: https://hosted.weblate.org/projects/mumla/

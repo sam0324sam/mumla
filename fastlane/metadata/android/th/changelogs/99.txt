@@ -1,5 +1,0 @@
-การอัปเดตครั้งนี้มุ่งเน้นให้แอปใช้ API เวอร์ชันใหม่กว่า ตามข้อกำหนดของ Google หวังว่าทุกอย่างจะราบรื่นนะครับ 🤞
-
-นอกจากนี้ ยังมีการแปลใหม่ด้วย: AHOHNMYC, Nordhøy, DEN35, J. Lavoie, Josue Mosqueira, Konstantin Goncharik, Laurens Wuyts, Maite Guix, Matthaiks, Michal Bedáň, Oğuz Ersen, Rodrigo Garcia Martin, deluxghost, gallegonovato, pjammo, ssantos.
-
-คุณสามารถช่วยแปล Mumla ได้ที่ https://hosted.weblate.org/engage/mumla/

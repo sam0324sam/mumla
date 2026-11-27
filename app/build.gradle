@@ -102,21 +102,9 @@ android {
 
     flavorDimensions "release"
     productFlavors {
-        goog {
-            dimension "release"
-            applicationId "se.lublin.mumla"
-        }
         foss {
             dimension "release"
             applicationId "se.lublin.mumla"
-        }
-        donation {
-            dimension "release"
-            applicationId "se.lublin.mumla.donation"
-        }
-        beta {
-            dimension "release"
-            applicationId "se.lublin.mumla.beta"
         }
     }
 
@@ -133,18 +121,12 @@ android {
     }
 
     buildTypes {
-        // signingConfig beta will override
         release {
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            if (android.hasProperty("signingConfigs")) {
-                if (signingConfigs.hasProperty("release")) {
-                    signingConfig = signingConfigs.release
-                }
-                if (signingConfigs.hasProperty("beta")) {
-                    signingConfig = signingConfigs.beta
-                }
+            if (android.hasProperty("signingConfigs") && signingConfigs.hasProperty("release")) {
+                signingConfig = signingConfigs.release
             }
         }
         debug {
@@ -153,11 +135,6 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             versionNameSuffix "-debug"
             signingConfig = signingConfigs.debug
-            if (android.hasProperty("signingConfigs")) {
-                if (signingConfigs.hasProperty("beta")) {
-                    signingConfig = signingConfigs.beta
-                }
-            }
         }
     }
     lint {
@@ -168,16 +145,6 @@ android {
         ignoreWarnings = false
         quiet = false
     }
-    // betas may be released every minute
-    // TODO? dynamic stuff, have to rebuild a lot
-    applicationVariants.all { variant ->
-        if (variant.flavorName == "beta") {
-            variant.outputs.each { output ->
-                output.versionCodeOverride = System.currentTimeSeconds() / 60
-            }
-        }
-    }
-
 }
 
 dependencies {
@@ -190,6 +157,4 @@ dependencies {
     implementation 'androidx.exifinterface:exifinterface:1.4.2'
     implementation 'com.google.android.material:material:1.13.0'
     implementation 'androidx.preference:preference:1.2.1'
-
-    googImplementation 'com.android.billingclient:billing:7.1.1'
 }

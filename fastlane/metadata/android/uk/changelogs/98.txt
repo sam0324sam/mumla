@@ -1,3 +1,0 @@
-Це випуск перекладу. Mumla тепер доступна грецькою мовою, спасибі Athanasios Plastiras! 
-
-Переклад зроблено тут: https://hosted.weblate.org/projects/mumla/
