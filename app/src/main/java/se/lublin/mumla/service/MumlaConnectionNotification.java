@@ -117,7 +117,6 @@ public class MumlaConnectionNotification {
             IntentFilter filter = new IntentFilter();
             filter.addAction(BROADCAST_DEAFEN);
             filter.addAction(BROADCAST_MUTE);
-            filter.addAction(BROADCAST_OVERLAY);
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                     mService.registerReceiver(mNotificationReceiver, filter, RECEIVER_NOT_EXPORTED);

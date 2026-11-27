@@ -292,8 +292,6 @@ public class ChannelListFragment extends HumlaServiceFragment implements OnChann
 
             getActivity().supportInvalidateOptionsMenu();
             return true;
-        } else if (itemId == R.id.menu_search) {
-            return false;
         } else if (itemId == R.id.menu_roster_locations) {
             if (getActivity() != null) {
                 DialogUtils.showRosterLocationsDialog(getActivity());

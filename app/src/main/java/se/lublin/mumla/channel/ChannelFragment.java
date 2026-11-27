@@ -205,20 +205,9 @@ public class ChannelFragment extends HumlaServiceFragment implements SharedPrefe
         SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(getActivity());
         preferences.registerOnSharedPreferenceChangeListener(this);
 
-        if(mViewPager != null) { // Phone
+        if (mViewPager != null) {
             ChannelFragmentPagerAdapter pagerAdapter = new ChannelFragmentPagerAdapter(getChildFragmentManager());
             mViewPager.setAdapter(pagerAdapter);
-        } else { // Tablet
-            ChannelListFragment listFragment = new ChannelListFragment();
-            Bundle listArgs = new Bundle();
-            listArgs.putBoolean("pinned", isShowingPinnedChannels());
-            listFragment.setArguments(listArgs);
-            ChannelChatFragment chatFragment = new ChannelChatFragment();
-
-            getChildFragmentManager().beginTransaction()
-                    .replace(R.id.list_fragment, listFragment)
-                    .replace(R.id.chat_fragment, chatFragment)
-                    .commit();
         }
     }
 

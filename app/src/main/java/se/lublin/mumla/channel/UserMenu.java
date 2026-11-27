@@ -26,7 +26,7 @@ import android.view.View;
 import androidx.appcompat.widget.PopupMenu;
 import androidx.fragment.app.FragmentManager;
 
-import se.lublin.humla.IHumlaSession;
+import se.lublin.humla.IHumlaService;
 import se.lublin.humla.model.IUser;
 import se.lublin.mumla.R;
 
@@ -38,10 +38,10 @@ public class UserMenu implements PermissionsPopupMenu.IOnMenuPrepareListener, Po
 
     private final Context mContext;
     private final IUser mUser;
-    private final IHumlaSession mService;
+    private final IHumlaService mService;
     private final IUserLocalStateListener mStateListener;
 
-    public UserMenu(Context context, IUser user, IHumlaSession service,
+    public UserMenu(Context context, IUser user, IHumlaService service,
                     FragmentManager fragmentManager, IUserLocalStateListener stateListener) {
         mContext = context;
         mUser = user;
@@ -53,7 +53,7 @@ public class UserMenu implements PermissionsPopupMenu.IOnMenuPrepareListener, Po
     public void onMenuPrepare(Menu menu, int permissions) {
         boolean self;
         try {
-            self = mUser.getSession() == mService.getSessionId();
+            self = mUser.getSession() == mService.HumlaSession().getSessionId();
         } catch (IllegalStateException e) {
             Log.d(TAG, "exception in onMenuPrepare: " + e);
             return;
