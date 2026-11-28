@@ -20,8 +20,10 @@ package se.lublin.mumla.service;
 import static android.app.PendingIntent.FLAG_CANCEL_CURRENT;
 import static android.app.PendingIntent.FLAG_IMMUTABLE;
 import static android.content.Context.RECEIVER_NOT_EXPORTED;
+import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
 import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
 
+import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -31,9 +33,12 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.os.Build;
+import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
 
 import se.lublin.mumla.R;
 import se.lublin.mumla.app.DrawerAdapter;
@@ -44,6 +49,7 @@ import se.lublin.mumla.app.MumlaActivity;
  * Created by andrew on 08/08/14.
  */
 public class MumlaConnectionNotification {
+    private static final String TAG = "MumlaConnNotif";
     private static final int NOTIFICATION_ID = 1;
     private static final String BROADCAST_MUTE = "b_mute";
     private static final String BROADCAST_DEAFEN = "b_deafen";
@@ -146,6 +152,10 @@ public class MumlaConnectionNotification {
         mShowing = false;
         mLastRenderedContentText = null;
         mService.stopForeground(true);
+        NotificationManager manager = (NotificationManager) mService.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager != null) {
+            manager.cancel(NOTIFICATION_ID);
+        }
     }
 
     /**
@@ -208,12 +218,50 @@ public class MumlaConnectionNotification {
         builder.setContentIntent(pendingIntent);
 
         Notification notification = builder.build();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            mService.startForeground(NOTIFICATION_ID, notification, FOREGROUND_SERVICE_TYPE_MICROPHONE);
-        } else {
-            mService.startForeground(NOTIFICATION_ID, notification);
-        }
+        startForegroundSafely(notification);
         return notification;
+    }
+
+    /**
+     * Starts foreground service with graceful fallback for Android 14-16 (SDK 34+) background FGS restrictions.
+     * On background reconnects or before RECORD_AUDIO is granted, FOREGROUND_SERVICE_TYPE_MICROPHONE throws
+     * SecurityException; fall back to MEDIA_PLAYBACK and finally to a regular notification instead of crashing.
+     */
+    private void startForegroundSafely(Notification notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            boolean hasMicPermission = ContextCompat.checkSelfPermission(
+                    mService, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+            if (hasMicPermission) {
+                try {
+                    mService.startForeground(NOTIFICATION_ID, notification, FOREGROUND_SERVICE_TYPE_MICROPHONE);
+                    return;
+                } catch (SecurityException | IllegalStateException e) {
+                    Log.w(TAG, "Failed to start MICROPHONE FGS (likely background reconnect), falling back to MEDIA_PLAYBACK", e);
+                }
+            }
+            try {
+                mService.startForeground(NOTIFICATION_ID, notification, FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+                return;
+            } catch (SecurityException | IllegalStateException e) {
+                Log.w(TAG, "Failed to start MEDIA_PLAYBACK FGS, posting regular notification instead", e);
+            }
+        } else {
+            try {
+                mService.startForeground(NOTIFICATION_ID, notification);
+                return;
+            } catch (RuntimeException e) {
+                Log.w(TAG, "Failed to start foreground service, posting regular notification instead", e);
+            }
+        }
+
+        try {
+            NotificationManager manager = (NotificationManager) mService.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (manager != null) {
+                manager.notify(NOTIFICATION_ID, notification);
+            }
+        } catch (RuntimeException e) {
+            Log.w(TAG, "Failed to post fallback notification", e);
+        }
     }
 
     public interface OnActionListener {
